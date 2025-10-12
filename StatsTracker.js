@@ -1,70 +1,30 @@
-// StatsTracker.js — SillyTavern extension
-// Struktur speglar ST Outfits (index): settings via extension_settings, createSettingsUI, slash cmds,
-// event hooks (CHAT_CHANGED/CHARACTER_CHANGED), auto-open, samt globala panelcontrollers.
-// Robust mot init-timing. Ingen import krävs.
-
-(async () => {
+// StatsTracker.js
+(() => {
+  // ===== Extension wiring (ST-style) =====
   const MODULE_NAME = 'stats_tracker';
 
-  // ---------------------------
-  // SillyTavern context helpers
-  // ---------------------------
-  function getCtxSafe() {
-    try { return window.SillyTavern?.getContext?.() || null; } catch { return null; }
-  }
-  function getExtSettingsStore() {
-    // Outfits använder globalen extension_settings. Vi matchar det mönstret.
-    // Om ST av någon anledning inte hunnit sätta den, gör en tom och ST fyller senare.
-    window.extension_settings = window.extension_settings || {};
-    return window.extension_settings;
-  }
-  function getSaveSettings() {
-    // Outfits importerar saveSettingsDebounced. Vi plockar globalen (samma symbol använder de).
-    return window.saveSettingsDebounced || (() => {});
-  }
-
-  const ctx = getCtxSafe();                 // kan vara null tidigt
-  const extension_settings = getExtSettingsStore();
-  const saveSettingsDebounced = getSaveSettings();
-
-  // ---------------------------
-  // Defaults + init settings
-  // ---------------------------
-  const DEFAULTS = Object.freeze({
+  // ST brukar exposa extension_settings + saveSettingsDebounced globalt
+  window.extension_settings = window.extension_settings || {};
+  const _defaults = {
     enableSysMessages: true,
     autoOpenBot:  true,
     autoOpenUser: true,
-    autoUpdate:   true,        // styr MutationObservern
-    // promptreserv om du senare vill låta modellen auto-posta statsblock
-    autoStatsPrompt: '',
-    // plats att spara presets så det lever i samma struktur som Outfits gör
-    presets: { user: {}, bot: {} }
-  });
+    autoUpdate:   true,   // styr MutationObservern
+    autoStatsPrompt: ''   // reserverad om du senare vill pusha system-prompter
+  };
+  extension_settings[MODULE_NAME] = Object.assign({}, _defaults, extension_settings[MODULE_NAME] || {});
+  const saveSettingsDebounced = window.saveSettingsDebounced || (()=>{});
 
-  if (!extension_settings[MODULE_NAME]) {
-    extension_settings[MODULE_NAME] = { ...DEFAULTS };
-  } else {
-    // se till att nya nycklar fylls på efter uppdateringar
-    for (const k of Object.keys(DEFAULTS)) {
-      if (!Object.hasOwn(extension_settings[MODULE_NAME], k)) {
-        extension_settings[MODULE_NAME][k] = DEFAULTS[k];
-      }
-    }
-  }
-
-  // ---------------------------
-  // Lokal state (panelinnehåll)
-  // ---------------------------
+  // ===== Panel + state =====
   const USER_PANEL_ID = 'user-stats-panel';
   const BOT_PANEL_ID  = 'bot-stats-panel';
   const STORAGE_KEY   = 'stats-tracker-v1';
-
   const DEFAULT_USER_NAME = (window.STT_USER_NAME || 'User');
   const DEFAULT_BOT_NAME  = (window.STT_BOT_NAME  || 'Assistant');
 
   const DEFAULT_STATS = {
     Health: 80,
-    Sustenance: 80, // byt gärna till "Satiety" om du vill
+    Sustenance: 80,  // "Nutrition" eller "Satiety" är språkligt snyggare, men vi behåller Sustenance för kompatibilitet
     Energy: 80,
     Hygiene: 80,
     Arousal: 10,
@@ -77,34 +37,30 @@
     botName: DEFAULT_BOT_NAME,
     user: { ...DEFAULT_STATS },
     bot:  { ...DEFAULT_STATS, Arousal: 0 },
+    presets: { user: {}, bot: {} },
     visible: { user: true, bot: true }
   };
 
-  // presets speglas mot extension_settings som Outfits gör
-  if (!extension_settings[MODULE_NAME].presets) {
-    extension_settings[MODULE_NAME].presets = { user: {}, bot: {} };
-    saveSettingsDebounced();
-  }
-
-  // ---------------------------
-  // Utilities
-  // ---------------------------
+  // -------------- Utilities --------------
   function clamp(n, min=0, max=100) {
     n = Number(n);
     if (Number.isNaN(n)) return 0;
     return Math.min(max, Math.max(min, Math.round(n)));
   }
+
   function persist() {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch {}
   }
   function loadState() {
     try { return JSON.parse(localStorage.getItem(STORAGE_KEY)); } catch { return null; }
   }
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+  function createEl(tag, attrs={}, html='') {
+    const el = document.createElement(tag);
+    Object.entries(attrs).forEach(([k,v]) => el.setAttribute(k, v));
+    if (html !== undefined && html !== null) el.innerHTML = html;
+    return el;
   }
-  function escapeAttr(s) { return escapeHtml(s); }
-  function escapeReg(s){ return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
   function makeDraggable(panel, handle) {
     let sx=0, sy=0, ox=0, oy=0, dragging=false;
@@ -132,137 +88,133 @@
     }
   }
 
-  function createEl(tag, attrs={}, html='') {
-    const el = document.createElement(tag);
-    Object.entries(attrs).forEach(([k,v]) => el.setAttribute(k, v));
-    if (html) el.innerHTML = html;
-    return el;
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function escapeAttr(s) {
+    return escapeHtml(s).replace(/"/g, '&quot;');
   }
 
-  // ---------------------------
-  // Render
-  // ---------------------------
-  function renderPanel(kind) {
-    const panelId = kind === 'user' ? USER_PANEL_ID : BOT_PANEL_ID;
-    let panel = document.getElementById(panelId);
-    if (!panel) {
-      panel = createEl('div', { id: panelId, class: 'stats-panel' });
-      document.body.appendChild(panel);
-    }
-
-    const name = state[kind === 'user' ? 'userName' : 'botName'];
-    const stats = state[kind];
-
-    panel.innerHTML = `
-      <div class="stats-header">
-        <h3>${escapeHtml(name)}’s Stats</h3>
-        <div class="stats-actions">
-          <span title="Minimize" data-action="min" aria-label="Minimize">—</span>
-          <span title="Reset to defaults" data-action="reset" aria-label="Reset">⟳</span>
-          <span title="Close" data-action="close" aria-label="Close">✕</span>
-        </div>
-      </div>
-      <div class="stats-content">
-        ${renderStatRow('Health', stats.Health)}
-        ${renderStatRow('Sustenance', stats.Sustenance)}
-        ${renderStatRow('Energy', stats.Energy)}
-        ${renderStatRow('Hygiene', stats.Hygiene)}
-        ${renderStatRow('Arousal', stats.Arousal)}
-
-        <div class="stats-meta">
-          <div style="margin-bottom:6px;"><b>💎 Mood</b></div>
-          <input class="stats-input" data-k="${kind}" data-field="Mood"
-                 style="width: 80%;" value="${escapeAttr(stats.Mood)}" />
-          <div style="margin:8px 0 6px;"><b>💎 Conditions</b> <span style="opacity:.8">(kommaseparerade)</span></div>
-          <input class="stats-input" data-k="${kind}" data-field="Conditions"
-                 style="width: 80%;" value="${escapeAttr(stats.Conditions.join(', '))}" />
-        </div>
-
-        <div style="margin-top:10px;">
-          <button class="stats-btn" data-action="save-preset" data-k="${kind}">Spara preset</button>
-          <button class="stats-btn" data-action="load-last"   data-k="${kind}" style="margin-left:6px;">Ladda senaste</button>
-        </div>
-
-        <div class="stats-presets-list" id="${panelId}-presets"></div>
-      </div>
-    `;
-
-    const header = panel.querySelector('.stats-header');
-    makeDraggable(panel, header);
-
-    panel.querySelectorAll('.stat-input').forEach(inp => {
-      inp.addEventListener('change', onStatInputChange);
-      inp.addEventListener('input', onStatInputLive);
-    });
-    panel.querySelectorAll('.stats-input').forEach(inp => {
-      inp.addEventListener('change', onMetaChange);
-    });
-    panel.querySelectorAll('[data-action]').forEach(btn => {
-      btn.addEventListener('click', onActionClick);
-    });
-
-    renderPresets(kind);
-    panel.style.display = state.visible[kind] ? 'block' : 'none';
-
-    // uppdatera maskbredd
-    panel.querySelectorAll('.stat-bar').forEach(bar => {
-      const v = Number(bar.getAttribute('data-value')) || 0;
-      const mask = bar.querySelector('.stat-mask');
-      mask.style.width = `calc(100% - ${v}%)`;
-      mask.style.borderRadius = v >= 99 ? '0' : '0 8px 8px 0';
-    });
-  }
-
-  function renderStatRow(label, value) {
-    value = clamp(value);
+  // -------------- Panel rendering --------------
+  function statRow(label, field, value) {
+    const v = clamp(value);
     return `
       <div class="stat-row">
-        <div class="stat-label">${label}:</div>
-        <div class="stat-bar" data-value="${value}">
-          <div class="stat-mask"></div>
+        <div class="stat-label">${escapeHtml(label)}:</div>
+        <div class="stat-bar" data-value="${v}">
+          <div class="stat-mask" style="width: calc(100% - ${v}%);"></div>
         </div>
-        <input class="stats-input stat-input" data-field="${label}" value="${value}" />
-        <div class="stat-value">${value}%</div>
-      </div>
-    `;
+        <div class="stat-value">${v}%</div>
+        <input class="stat-input" data-field="${field}" type="number" min="0" max="100" value="${v}">
+      </div>`;
   }
 
-  function renderPresets(kind) {
-    const listEl = document.getElementById(
-      (kind === 'user' ? USER_PANEL_ID : BOT_PANEL_ID) + '-presets'
-    );
-    const bank = extension_settings[MODULE_NAME].presets?.[kind] || {};
-    listEl.innerHTML = '';
-    Object.keys(bank).forEach(key => {
-      const row = createEl('div', { class: 'stats-preset' });
+  function metaRow(label, field, value, kind) {
+    const val = field === 'Conditions' ? escapeHtml((value || []).join(', ')) : escapeHtml(value || '');
+    const ph  = field === 'Conditions' ? 'comma,separated,tags' : 'Mood...';
+    return `
+      <div class="meta-row">
+        <div class="meta-label">${escapeHtml(label)}:</div>
+        <input class="meta-input" data-field="${field}" data-k="${kind}" type="text" placeholder="${ph}" value="${val}">
+      </div>`;
+  }
+
+  function actionsRow(kind) {
+    return `
+      <div class="actions-row">
+        <button class="stats-btn" data-action="reset" data-k="${kind}">Reset</button>
+        <button class="stats-btn" data-action="save-preset" data-k="${kind}">Spara preset</button>
+        <button class="stats-btn" data-action="load-last" data-k="${kind}">Ladda senast</button>
+        <span class="stats-btn icon" data-action="min" title="Minimize">_</span>
+        <span class="stats-btn icon" data-action="close" title="Close">×</span>
+      </div>`;
+  }
+
+  function renderPresets(kind, panelEl) {
+    const wrapId = `${kind}-stats-presets`;
+    let host = panelEl.querySelector(`#${wrapId}`);
+    if (!host) {
+      host = createEl('div', { id: wrapId, class: 'presets-wrap' });
+      panelEl.querySelector('.stats-content').appendChild(host);
+    }
+    host.innerHTML = `<div class="presets-title">Presets</div><div class="presets-list"></div>`;
+    const listEl = host.querySelector('.presets-list');
+
+    const map = state.presets[kind] || {};
+    Object.keys(map).forEach(key => {
+      const row = createEl('div', { class: 'preset-row' });
       row.innerHTML = `
         <div>${escapeHtml(key)}</div>
         <div>
           <button class="stats-btn" data-action="use-preset" data-k="${kind}" data-id="${escapeAttr(key)}">Ladda</button>
           <button class="stats-btn" data-action="del-preset" data-k="${kind}" data-id="${escapeAttr(key)}">Radera</button>
-        </div>
-      `;
+        </div>`;
       listEl.appendChild(row);
     });
   }
 
-  // ---------------------------
-  // Events (inputs, knappar)
-  // ---------------------------
-  function findKindFromInput(inp) {
-    const panel = inp.closest('.stats-panel');
-    return panel.id.includes('user') ? 'user' : 'bot';
+  function renderPanel(kind) {
+    const id   = kind === 'user' ? USER_PANEL_ID : BOT_PANEL_ID;
+    const name = kind === 'user' ? state.userName : state.botName;
+    const stats= kind === 'user' ? state.user : state.bot;
+
+    let panel = document.getElementById(id);
+    if (!panel) {
+      panel = createEl('div', { id, class: 'stats-panel' });
+      panel.innerHTML = `
+        <div class="stats-header">
+          <h3>${escapeHtml(name)}'s Stats</h3>
+          <div class="stats-actions">
+            <span class="stats-btn icon" data-action="min">_</span>
+            <span class="stats-btn icon" data-action="close">×</span>
+          </div>
+        </div>
+        <div class="stats-content"></div>
+      `;
+      document.body.appendChild(panel);
+      makeDraggable(panel, panel.querySelector('.stats-header'));
+    }
+
+    const content = panel.querySelector('.stats-content');
+    content.innerHTML = `
+      ${statRow('Health', 'Health', stats.Health)}
+      ${statRow('Sustenance', 'Sustenance', stats.Sustenance)}
+      ${statRow('Energy', 'Energy', stats.Energy)}
+      ${statRow('Hygiene', 'Hygiene', stats.Hygiene)}
+      ${statRow('Arousal', 'Arousal', stats.Arousal)}
+      ${metaRow('Mood', 'Mood', stats.Mood, kind)}
+      ${metaRow('Conditions', 'Conditions', stats.Conditions, kind)}
+      ${actionsRow(kind)}
+    `;
+
+    // events
+    content.querySelectorAll('.stat-input').forEach(inp => {
+      inp.addEventListener('input', onStatInputLive);
+      inp.addEventListener('change', onStatInputChange);
+    });
+    content.querySelectorAll('.meta-input').forEach(inp => inp.addEventListener('change', onMetaChange));
+    content.querySelectorAll('.stats-btn').forEach(btn => btn.addEventListener('click', onActionClick));
+
+    renderPresets(kind, panel);
+
+    // show/hide
+    panel.style.display = state.visible[kind] ? 'block' : 'none';
+    panel.querySelector('.stats-header h3').textContent = `${name}'s Stats`;
   }
 
+  function findKindFromInput(inp) {
+    const panel = inp.closest('.stats-panel');
+    return panel && panel.id.includes('user') ? 'user' : 'bot';
+  }
+
+  // Live uppdatering av procentfältet
   function onStatInputLive(e) {
     const inp = e.currentTarget;
     let v = clamp(inp.value);
     inp.value = v;
     const row = inp.closest('.stat-row');
     row.querySelector('.stat-value').textContent = `${v}%`;
-    const bar = row.querySelector('.stat-bar');
-    bar.setAttribute('data-value', v);
-    bar.querySelector('.stat-mask').style.width = `calc(100% - ${v}%)`;
+    row.querySelector('.stat-mask').style.width = `calc(100% - ${v}%)`;
   }
 
   function onStatInputChange(e) {
@@ -292,8 +244,7 @@
     const kind = el.getAttribute('data-k');
 
     if (action === 'min') {
-      const panel = el.closest('.stats-panel');
-      panel.classList.toggle('minimized');
+      el.closest('.stats-panel').classList.toggle('minimized');
       return;
     }
     if (action === 'close') {
@@ -313,91 +264,34 @@
     if (action === 'save-preset') {
       const name = prompt('Namn på preset?');
       if (!name) return;
-      // spara i extension_settings som Outfits gör
-      extension_settings[MODULE_NAME].presets[kind][name] = JSON.parse(JSON.stringify(state[kind]));
-      saveSettingsDebounced();
-      renderPresets(kind);
+      state.presets[kind][name] = JSON.parse(JSON.stringify(state[kind]));
+      persist();
+      renderPresets(kind, document.getElementById(kind === 'user' ? USER_PANEL_ID : BOT_PANEL_ID));
       return;
     }
     if (action === 'load-last') {
       alert('Ingen historikstack implementerad. Använd presets så länge.');
       return;
     }
-    if (action === 'use-preset' || action === 'del-preset') {
+    if (action === 'use-preset') {
       const id = el.getAttribute('data-id');
-      if (action === 'use-preset') {
-        const preset = extension_settings[MODULE_NAME].presets[kind][id];
-        if (preset) {
-          state[kind] = JSON.parse(JSON.stringify(preset));
-          persist();
-          renderPanel(kind);
-        }
-      } else {
-        delete extension_settings[MODULE_NAME].presets[kind][id];
-        saveSettingsDebounced();
-        renderPresets(kind);
-      }
+      const src = state.presets[kind]?.[id];
+      if (!src) return;
+      state[kind] = JSON.parse(JSON.stringify(src));
+      persist();
+      renderPanel(kind);
+      return;
+    }
+    if (action === 'del-preset') {
+      const id = el.getAttribute('data-id');
+      if (state.presets[kind]?.[id]) delete state.presets[kind][id];
+      persist();
+      renderPresets(kind, document.getElementById(kind === 'user' ? USER_PANEL_ID : BOT_PANEL_ID));
       return;
     }
   }
 
-  // ---------------------------
-  // Parsning av AI-svar
-  // ---------------------------
-  const FENCE_STATS = /```stats\s+([\s\S]*?)```/i;
-  const CLASSIC_BLOCK = new RegExp(
-    String.raw`${escapeReg(DEFAULT_USER_NAME)}'s Stats\s*\n---\n- Health:\s*([0-9]+)%\n- Sustenance:\s*([0-9]+)%\n- Energy:\s*([0-9]+)%\n- Hygiene:\s*([0-9]+)%\n- Arousal:\s*([0-9]+)%\n💎:\s*([\s\S]*?)$`,
-    'mi'
-  );
-
-  function parseAndUpdateFromMessage(text) {
-    if (!text) return;
-
-    // 1) Fenced yaml-ish block
-    const m1 = text.match(FENCE_STATS);
-    if (m1) {
-      try {
-        const parsed = parseLooseYaml(m1[1]);
-        if (parsed.user)  applyStats('user', parsed.user);
-        if (parsed.bot)   applyStats('bot',  parsed.bot);
-        persist();
-        renderPanel('user'); renderPanel('bot');
-        return;
-      } catch (err) {
-        console.warn('[StatsTracker] fenced stats parse failed:', err);
-      }
-    }
-
-    // 2) Classic enkel user-block
-    const m2 = text.match(CLASSIC_BLOCK);
-    if (m2) {
-      const [ , h, s, e, hy, a, meta ] = m2;
-      const [mood, conditionsRaw] = String(meta).split('|').map(t => String(t || '').trim());
-      state.user.Health = clamp(h);
-      state.user.Sustenance = clamp(s);
-      state.user.Energy = clamp(e);
-      state.user.Hygiene = clamp(hy);
-      state.user.Arousal = clamp(a);
-      state.user.Mood = mood || state.user.Mood;
-      state.user.Conditions = (conditionsRaw || '').split(',').map(x => x.trim()).filter(Boolean);
-      persist();
-      renderPanel('user');
-    }
-  }
-
-  function applyStats(kind, obj) {
-    const target = state[kind];
-    if (!target) return;
-    ['Health','Sustenance','Energy','Hygiene','Arousal'].forEach(k => {
-      if (obj[k] != null) target[k] = clamp(obj[k]);
-    });
-    if (obj.Mood != null) target.Mood = String(obj.Mood);
-    if (obj.Conditions != null) {
-      if (Array.isArray(obj.Conditions)) target.Conditions = obj.Conditions.map(String);
-      else target.Conditions = String(obj.Conditions).split(',').map(s => s.trim()).filter(Boolean);
-    }
-  }
-
+  // -------------- Lättviktig "lös parser" (om du vill importera från text i chatten) --------------
   function parseLooseYaml(src) {
     const out = {};
     let cur = null;
@@ -424,9 +318,29 @@
     return out;
   }
 
-  // ---------------------------
-  // Chat hook (auto-update)
-  // ---------------------------
+  function parseAndUpdateFromMessage(text) {
+    if (!text || typeof text !== 'string') return;
+    const fence = text.match(/```([\s\S]*?)```/);
+    const raw = fence ? fence[1] : text;
+    const obj = parseLooseYaml(raw);
+    if (obj.user) mergeStats(state.user, obj.user);
+    if (obj.bot)  mergeStats(state.bot, obj.bot);
+    persist();
+    renderPanel('user'); renderPanel('bot');
+  }
+
+  function mergeStats(target, obj) {
+    ['Health','Sustenance','Energy','Hygiene','Arousal'].forEach(k => {
+      if (obj[k] != null) target[k] = clamp(obj[k]);
+    });
+    if (obj.Mood != null) target.Mood = String(obj.Mood);
+    if (obj.Conditions != null) {
+      if (Array.isArray(obj.Conditions)) target.Conditions = obj.Conditions.map(String);
+      else target.Conditions = String(obj.Conditions).split(',').map(s => s.trim()).filter(Boolean);
+    }
+  }
+
+  // -------------- Chat hook / MutationObserver --------------
   const chatRoot = document.querySelector('#chat') || document.body;
   let observerEnabled = !!extension_settings[MODULE_NAME].autoUpdate;
 
@@ -447,182 +361,14 @@
       }
     }
   });
-  try { obs.observe(chatRoot, { childList: true, subtree: true }); } catch {}
+  obs.observe(chatRoot, { childList: true, subtree: true });
 
-  // togglas från settings-UI och slash cmd
-  window.StatsTrackerEnableAutoUpdate = function(on){ observerEnabled = !!on; };
-
-  // ---------------------------
-  // Settings UI (Extensions)
-  // ---------------------------
-  function createSettingsUI() {
-    if (typeof $ !== 'function') return;
-    const $host = $("#extensions_settings");
-    if (!$host.length) return;
-
-    const s = extension_settings[MODULE_NAME];
-
-    const settingsHtml = `
-    <div class="outfit-extension-settings">
-      <div class="inline-drawer">
-        <div class="inline-drawer-toggle inline-drawer-header">
-          <b>Stats Tracker Settings</b>
-          <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-        </div>
-        <div class="inline-drawer-content">
-          <div class="flex-container">
-            <label for="stats-sys-toggle">Enable system messages</label>
-            <input type="checkbox" id="stats-sys-toggle" ${s.enableSysMessages ? 'checked' : ''}>
-          </div>
-
-          <div class="flex-container">
-            <label for="stats-auto-bot">Auto-open bot panel</label>
-            <input type="checkbox" id="stats-auto-bot" ${s.autoOpenBot ? 'checked' : ''}>
-          </div>
-
-          <div class="flex-container">
-            <label for="stats-auto-user">Auto-open user panel</label>
-            <input type="checkbox" id="stats-auto-user" ${s.autoOpenUser ? 'checked' : ''}>
-          </div>
-
-          <div class="flex-container">
-            <label for="stats-auto-update">Enable auto updates</label>
-            <input type="checkbox" id="stats-auto-update" ${s.autoUpdate ? 'checked' : ''}>
-          </div>
-
-          <div class="flex-container">
-            <label for="stats-prompt-input">System Prompt (optional):</label>
-            <textarea id="stats-prompt-input" rows="4" placeholder="Enter system prompt for auto stats (optional)">${s.autoStatsPrompt || ''}</textarea>
-          </div>
-        </div>
-      </div>
-    </div>`;
-
-    $host.append(settingsHtml);
-
-    $("#stats-sys-toggle").on("input", function () {
-      extension_settings[MODULE_NAME].enableSysMessages = $(this).prop('checked');
-      saveSettingsDebounced();
-    });
-    $("#stats-auto-bot").on("input", function () {
-      extension_settings[MODULE_NAME].autoOpenBot = $(this).prop('checked');
-      saveSettingsDebounced();
-      if ($(this).prop('checked')) window.botStatsPanel?.show();
-    });
-    $("#stats-auto-user").on("input", function () {
-      extension_settings[MODULE_NAME].autoOpenUser = $(this).prop('checked');
-      saveSettingsDebounced();
-      if ($(this).prop('checked')) window.userStatsPanel?.show();
-    });
-    $("#stats-auto-update").on("input", function () {
-      const on = $(this).prop('checked');
-      extension_settings[MODULE_NAME].autoUpdate = on;
-      window.StatsTrackerEnableAutoUpdate(on);
-      saveSettingsDebounced();
-    });
-    $("#stats-prompt-input").on("change", function () {
-      extension_settings[MODULE_NAME].autoStatsPrompt = $(this).val();
-      saveSettingsDebounced();
-    });
-  }
-
-  // ---------------------------
-  // ST-context integration
-  // ---------------------------
-  function integrateWithSTContext() {
-    try {
-      const C = getCtxSafe();
-      if (!C) return;
-
-      const refreshNames = () => {
-        try {
-          const character = C?.characters?.[C?.characterId]?.name || 'Assistant';
-          if (character && state.botName !== character) {
-            state.botName = character;
-            persist();
-            renderPanel('bot');
-          }
-        } catch (inner) {
-          console.warn('[StatsTracker] refreshNames failed:', inner);
-        }
-      };
-
-      const { eventSource, event_types } = C || {};
-      if (eventSource && event_types && typeof eventSource.on === 'function') {
-        if (event_types.CHAT_CHANGED)       eventSource.on(event_types.CHAT_CHANGED, refreshNames);
-        if (event_types.CHARACTER_CHANGED)  eventSource.on(event_types.CHARACTER_CHANGED, refreshNames);
-      }
-      refreshNames();
-    } catch (e) {
-      console.warn('[StatsTracker] ST context integration failed:', e);
-    }
-  }
-
-  // ---------------------------
-  // Slash-kommandon (Outfits-style)
-  // ---------------------------
-  function registerStatsCommands() {
-    try {
-      const C = getCtxSafe();
-      const registerSlashCommand = C?.registerSlashCommand;
-      if (typeof registerSlashCommand !== 'function') return;
-
-      registerSlashCommand('stats-bot', (...args) => {
-        window.botStatsPanel?.toggle();
-        toastr?.info?.('Toggled bot stats panel', 'Stats Tracker');
-      }, [], 'Toggle bot stats panel', true, true);
-
-      registerSlashCommand('stats-user', (...args) => {
-        window.userStatsPanel?.toggle();
-        toastr?.info?.('Toggled user stats panel', 'Stats Tracker');
-      }, [], 'Toggle user stats panel', true, true);
-
-      registerSlashCommand('stats-auto', (...args) => {
-        const arg = String(args?.[0] || '').toLowerCase();
-        if (arg === 'on') {
-          extension_settings[MODULE_NAME].autoUpdate = true;
-          window.StatsTrackerEnableAutoUpdate(true);
-          toastr?.success?.('Auto updates enabled', 'Stats Tracker');
-        } else if (arg === 'off') {
-          extension_settings[MODULE_NAME].autoUpdate = false;
-          window.StatsTrackerEnableAutoUpdate(false);
-          toastr?.warning?.('Auto updates disabled', 'Stats Tracker');
-        } else {
-          const on = !!extension_settings[MODULE_NAME].autoUpdate;
-          toastr?.info?.(`Auto updates: ${on ? 'ON' : 'OFF'}`, 'Stats Tracker');
-        }
-        saveSettingsDebounced();
-      }, [], 'Toggle auto updates for stats (on/off)', true, true);
-    } catch (e) {
-      console.warn('[StatsTracker] Slash command registration failed:', e);
-    }
-  }
-
-  // ---------------------------
-  // Globala panelcontrollers (Outfits-liknande API)
-  // ---------------------------
-  window.userStatsPanel = {
-    show(){ StatsTracker.showUser(true); },
-    hide(){ StatsTracker.showUser(false); },
-    toggle(){
-      const el = document.getElementById(USER_PANEL_ID);
-      const vis = el && el.style.display !== 'none';
-      StatsTracker.showUser(!vis);
-    }
-  };
-  window.botStatsPanel = {
-    show(){ StatsTracker.showBot(true); },
-    hide(){ StatsTracker.showBot(false); },
-    toggle(){
-      const el = document.getElementById(BOT_PANEL_ID);
-      const vis = el && el.style.display !== 'none';
-      StatsTracker.showBot(!vis);
-    }
+  // Exponera liten switch för settings-UI
+  window.StatsTrackerEnableAutoUpdate = function (on) {
+    observerEnabled = !!on;
   };
 
-  // ---------------------------
-  // Publikt API
-  // ---------------------------
+  // -------------- API på window --------------
   window.StatsTracker = {
     showUser(v=true){ state.visible.user = !!v; persist(); renderPanel('user'); },
     showBot(v=true){ state.visible.bot = !!v; persist(); renderPanel('bot'); },
@@ -636,46 +382,139 @@
     getState(){ return JSON.parse(JSON.stringify(state)); }
   };
 
-  // ---------------------------
-  // Första render + init
-  // ---------------------------
+  // -------------- Settings UI (Extensions-fliken) --------------
+  function createSettingsUI() {
+    if (typeof $ !== 'function') return; // jQuery krävs i ST UI
+    const $host = $("#extensions_settings");
+    if (!$host.length) return;
+
+    const settingsHtml = `
+    <div class="outfit-extension-settings">
+      <div class="inline-drawer">
+        <div class="inline-drawer-toggle inline-drawer-header">
+          <b>Stats Tracker Settings</b>
+          <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+        </div>
+        <div class="inline-drawer-content">
+          <div class="flex-container">
+            <label for="stats-sys-toggle">Enable system messages</label>
+            <input type="checkbox" id="stats-sys-toggle"
+              ${extension_settings[MODULE_NAME].enableSysMessages ? 'checked' : ''}>
+          </div>
+
+          <div class="flex-container">
+            <label for="stats-auto-bot">Auto-open bot panel</label>
+            <input type="checkbox" id="stats-auto-bot"
+              ${extension_settings[MODULE_NAME].autoOpenBot ? 'checked' : ''}>
+          </div>
+
+          <div class="flex-container">
+            <label for="stats-auto-user">Auto-open user panel</label>
+            <input type="checkbox" id="stats-auto-user"
+              ${extension_settings[MODULE_NAME].autoOpenUser ? 'checked' : ''}>
+          </div>
+
+          <div class="flex-container">
+            <label for="stats-auto-update">Enable auto updates</label>
+            <input type="checkbox" id="stats-auto-update"
+              ${extension_settings[MODULE_NAME].autoUpdate ? 'checked' : ''}>
+          </div>
+
+          <div class="flex-container">
+            <label for="stats-prompt-input">System Prompt (optional):</label>
+            <textarea id="stats-prompt-input" rows="4" placeholder="Enter system prompt for auto stats (optional)">${
+              extension_settings[MODULE_NAME].autoStatsPrompt || ''
+            }</textarea>
+          </div>
+        </div>
+      </div>
+    </div>`;
+
+    $host.append(settingsHtml);
+
+    $("#stats-sys-toggle").on("input", function () {
+      extension_settings[MODULE_NAME].enableSysMessages = $(this).prop('checked');
+      saveSettingsDebounced();
+    });
+
+    $("#stats-auto-bot").on("input", function () {
+      extension_settings[MODULE_NAME].autoOpenBot = $(this).prop('checked');
+      saveSettingsDebounced();
+      if ($(this).prop('checked')) StatsTracker.showBot(true);
+    });
+
+    $("#stats-auto-user").on("input", function () {
+      extension_settings[MODULE_NAME].autoOpenUser = $(this).prop('checked');
+      saveSettingsDebounced();
+      if ($(this).prop('checked')) StatsTracker.showUser(true);
+    });
+
+    $("#stats-auto-update").on("input", function () {
+      const on = $(this).prop('checked');
+      extension_settings[MODULE_NAME].autoUpdate = on;
+      window.StatsTrackerEnableAutoUpdate(on);
+      saveSettingsDebounced();
+    });
+
+    $("#stats-prompt-input").on("change", function () {
+      extension_settings[MODULE_NAME].autoStatsPrompt = $(this).val();
+      saveSettingsDebounced();
+    });
+  }
+
+  // === ST context integration (namn + event) ===
+  function integrateWithSTContext() {
+    try {
+      const ctxApi = window.SillyTavern?.getContext?.() || null;
+      if (!ctxApi) return;
+
+      const refreshNames = () => {
+        try {
+          const context = window.SillyTavern.getContext();
+          const character = context.characters?.[context.characterId]?.name || 'Assistant';
+          state.botName = character;
+          persist();
+          renderPanel('bot');
+        } catch {}
+      };
+
+      const { eventSource, event_types } = window.SillyTavern.getContext();
+      eventSource?.on?.(event_types.CHAT_CHANGED, refreshNames);
+      eventSource?.on?.(event_types.CHARACTER_CHANGED, refreshNames);
+      refreshNames();
+    } catch (e) {
+      console.warn('[StatsTracker] ST context integration failed:', e);
+    }
+  }
+
+  // -------------- First render --------------
   renderPanel('user');
   renderPanel('bot');
 
-  // visa enligt state
+  // Visa per default enligt state
   if (state.visible.user) document.getElementById(USER_PANEL_ID).style.display = 'block';
   if (state.visible.bot)  document.getElementById(BOT_PANEL_ID).style.display  = 'block';
 
-  // vänta tills Extensions-UI finns (Outfits gör exakt detta mönster)
-  const tryInitSettings = () => {
-    try {
+  // Knyt ST-context
+  integrateWithSTContext();
+
+  // Skapa settings-UI när ST:s Extensions finns
+  if (typeof $ === 'function') {
+    const tryInitSettings = () => {
       if (document.querySelector('#extensions_settings')) {
         createSettingsUI();
-        registerStatsCommands();    // motsvarar registerOutfitCommands i Outfits
-        integrateWithSTContext();   // uppdatera namn + händelser
-
-        // auto-open likt Outfits
         if (extension_settings[MODULE_NAME].autoOpenBot) {
-          setTimeout(() => window.botStatsPanel.show(), 1000);
+          setTimeout(() => StatsTracker.showBot(true), 1000);
         }
         if (extension_settings[MODULE_NAME].autoOpenUser) {
-          setTimeout(() => window.userStatsPanel.show(), 1000);
+          setTimeout(() => StatsTracker.showUser(true), 1000);
         }
       } else {
         setTimeout(tryInitSettings, 500);
       }
-    } catch (e) {
-      console.error('[StatsTracker] tryInitSettings error:', e);
-    }
-  };
-
-  // kör init efter att appen är redo om vi kan; annars kör direkt
-  const C2 = getCtxSafe();
-  if (C2?.eventSource?.on && C2?.event_types?.APP_READY) {
-    C2.eventSource.on(C2.event_types.APP_READY, tryInitSettings);
+    };
+    tryInitSettings();
   }
-  // fallback om APP_READY inte triggas i vår timing
-  setTimeout(tryInitSettings, 800);
 
   console.log('[StatsTracker] loaded');
 })();

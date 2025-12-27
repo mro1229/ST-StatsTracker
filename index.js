@@ -304,7 +304,7 @@ function render(kind) {
     ${buildStatRow("Energy", stats.Energy)}
     ${buildStatRow("Hygiene", stats.Hygiene)}
     ${buildStatRow("Arousal", stats.Arousal)}
-    ${buildStatRow("Genital size", stats.GenitalSize)}
+    ${buildCmRow("Genital size", stats.GenitalSize, 40)}
     ${buildMoodRow(stats.Mood)}
     ${buildConditionsRow(conditions)}
     ${buildAppearanceRow(stats.Appearance)}
@@ -650,6 +650,7 @@ $(async () => {
     console.error("[StatsTracker] Failed to initialize:", e);
   }
 });
+
 
 
 

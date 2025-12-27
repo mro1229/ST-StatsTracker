@@ -13,7 +13,18 @@ Rules:
 - Output MUST be valid JSON, and ONLY JSON. No Markdown fences, no commentary.
 - Use this exact shape:
 {
-  "user": { "Health": 0-100, "Sustenance": 0-100, "Energy": 0-100, "Hygiene": 0-100, "Arousal": 0-100, "GenitalSize": number (cm), "Mood": "string", "Conditions": ["string", "..."], "Appearance": "string", "GenitalAppearance": "string" },
+  "user": {
+  "Health": 0-100,
+  "Sustenance": 0-100,
+  "Energy": 0-100,
+  "Hygiene": 0-100,
+  "Arousal": 0-100,
+  "GSize": number,
+  "Mood": "string",
+  "Conditions": ["string"],
+  "Appearance": "string",
+  "GDesc": "string"
+},
   "bot":  { same fields as user }
 }
 - Clamp numeric values to 0..100.
@@ -23,8 +34,8 @@ Rules:
 - Prefer small, realistic changes per update unless the messages clearly indicate a big change.
 - Arousal equals to sexual arousal.
 - Try to update each values as realistically as possible according to the current story.
-- GenitalSize: realistic adult size in centimeters. Clamp to 0–100. GenitalSize should rarely change. Treat it as a physical constant.
-- GenitalAppearance: description of current genital appearance (penis, pubes and testicles). Focus on shape, skin, fluids (precum/cum), hair, hardness (flaccid, semi-hard, hard) and general physical characteristics. (aim ~200 chars).
+- GSize: realistic adult size in centimeters. Clamp to 0–100. GenitalSize should rarely change. Treat it as a physical constant.
+- GDesc: description of current genital appearance (penis, pubes and testicles). Focus on shape, skin, fluids (precum/cum), hair, hardness (flaccid, semi-hard, hard) and general physical characteristics. (aim ~200 chars).
 `;
 
 const DEFAULTS = {
@@ -150,65 +161,101 @@ function clampTextToBox(str, maxChars = 220) {
   return t;
 }
 
-function findField(obj, wanted) {
+function findByHeuristic(obj, { wantsNumber = false, wantsText = false }) {
   if (!obj || typeof obj !== "object") return undefined;
 
-  const canon = wanted.toLowerCase().replace(/[^a-z0-9]/g, "");
-
   for (const [key, value] of Object.entries(obj)) {
-    const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, "");
-    if (normalizedKey === canon) return value;
+    const k = key.toLowerCase();
+
+    // Candidate for size: numeric, mentions size/length/cm
+    if (wantsNumber) {
+      if (
+        typeof value === "number" &&
+        (k.includes("genital") || k.includes("size") || k.includes("length"))
+      ) {
+        return value;
+      }
+
+      if (
+        typeof value === "string" &&
+        (k.includes("genital") || k.includes("size") || k.includes("length"))
+      ) {
+        const m = value.match(/(\d+(?:[.,]\d+)?)/);
+        if (m) return value;
+      }
+    }
+
+    // Candidate for appearance: string, mentions genital
+    if (wantsText) {
+      if (
+        typeof value === "string" &&
+        k.includes("genital")
+      ) {
+        return value;
+      }
+    }
   }
+
   return undefined;
 }
 
 function normalizeStats(obj) {
   const out = {};
+
+  // Core numeric stats (0–100)
   for (const key of ["Health", "Sustenance", "Energy", "Hygiene", "Arousal"]) {
     const c = clamp(obj?.[key]);
     if (c !== null) out[key] = c;
   }
 
-  const genitalSizeRaw = findField(obj, "GenitalSize");
+  // ---- Genital size (cm), robust against AI key madness ----
+  const genitalSizeRaw = findByHeuristic(obj, { wantsNumber: true });
 
-if (genitalSizeRaw != null) {
-  let n = Number(genitalSizeRaw);
+  if (genitalSizeRaw != null) {
+    let n = Number(genitalSizeRaw);
 
-  // Accept strings like "10 cm", "10cm", "10.5"
-  if (!Number.isFinite(n) && typeof genitalSizeRaw === "string") {
-    const m = genitalSizeRaw.match(/(\d+(?:[.,]\d+)?)/);
-    if (m) n = Number(m[1].replace(",", "."));
+    // Accept strings like "10 cm", "10cm", "10.5"
+    if (!Number.isFinite(n) && typeof genitalSizeRaw === "string") {
+      const m = genitalSizeRaw.match(/(\d+(?:[.,]\d+)?)/);
+      if (m) n = Number(m[1].replace(",", "."));
+    }
+
+    if (Number.isFinite(n)) {
+      out.GenitalSize = Math.max(0, Math.min(100, Math.round(n * 10) / 10));
+    }
   }
 
-  if (Number.isFinite(n)) {
-    out.GenitalSize = Math.max(0, Math.min(100, Math.round(n * 10) / 10));
+  // ---- Mood ----
+  if (obj?.Mood != null) {
+    out.Mood = String(obj.Mood).trim().slice(0, 60) || "Neutral";
   }
-}
 
-  if (obj?.Mood != null) out.Mood = String(obj.Mood).trim().slice(0, 60) || "Neutral";
-
+  // ---- Conditions (max 3) ----
   if (obj?.Conditions != null) {
     let arr = obj.Conditions;
     if (typeof arr === "string") {
-      arr = arr.split(/,|\n/).map((s) => s.trim()).filter(Boolean);
+      arr = arr.split(/,|\n/).map(s => s.trim()).filter(Boolean);
     }
     if (!Array.isArray(arr)) arr = [];
-    arr = arr.map((s) => String(s).trim()).filter(Boolean).slice(0, 3);
+    arr = arr.map(s => String(s).trim()).filter(Boolean).slice(0, 3);
     out.Conditions = arr.length ? arr : ["none"];
   }
 
+  // ---- General appearance ----
   if (obj?.Appearance != null) {
     out.Appearance = clampTextToBox(obj.Appearance, 220);
   }
-  
-  const genitalAppearanceRaw = findField(obj, "GenitalAppearance");
+
+  // ---- Genital appearance (text), heuristic-based ----
+  const genitalAppearanceRaw = findByHeuristic(obj, { wantsText: true });
 
   if (genitalAppearanceRaw != null) {
     out.GenitalAppearance = clampTextToBox(genitalAppearanceRaw, 220);
   }
 
-return out;
+  return out;
 }
+
 
 function mergeInto(target, patch) {
   if (!patch) return;
@@ -804,6 +851,7 @@ $(async () => {
     console.error("[StatsTracker] Failed to initialize:", e);
   }
 });
+
 
 
 

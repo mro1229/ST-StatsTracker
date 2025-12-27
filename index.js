@@ -13,7 +13,7 @@ Rules:
 - Output MUST be valid JSON, and ONLY JSON. No Markdown fences, no commentary.
 - Use this exact shape:
 {
-  "user": { "Health": 0-100, "Sustenance": 0-100, "Energy": 0-100, "Hygiene": 0-100, "Arousal": 0-100, "GenitalSize": number (cm), "Mood": "string", "Conditions": ["string", "..."], "Appearance": "string" },
+  "user": { "Health": 0-100, "Sustenance": 0-100, "Energy": 0-100, "Hygiene": 0-100, "Arousal": 0-100, "GenitalSize": number (cm), "Mood": "string", "Conditions": ["string", "..."], "Appearance": "string" }, "GenitalAppearance": "string",
   "bot":  { same fields as user }
 }
 - Clamp numeric values to 0..100.
@@ -24,6 +24,7 @@ Rules:
 - Arousal equals to sexual arousal.
 - Try to update each values as realistically as possible according to the current story.
 - GenitalSize: realistic adult size in centimeters. Clamp to 0–100. GenitalSize should rarely change. Treat it as a physical constant.
+- GenitalAppearance: description of current genital appearance (penis, pubes and testicles). Focus on shape, skin, fluids (precum/cum), hair, hardness (flaccid, semi-hard, hard) and general physical characteristics. (aim ~200 chars).
 `;
 
 const DEFAULTS = {
@@ -44,6 +45,7 @@ const DEFAULTS = {
       Mood: "Neutral",
       Conditions: ["none"],
       Appearance: "No data yet.",
+      GenitalAppearance: "No data yet.",
     },
     bot: {
       Health: 80,
@@ -55,6 +57,7 @@ const DEFAULTS = {
       Mood: "Neutral",
       Conditions: ["none"],
       Appearance: "No data yet.",
+      GenitalAppearance: "No data yet.",
     },
   },
 };
@@ -156,7 +159,16 @@ if (obj?.GenitalSize != null || obj?.genitalSize != null) {
   if (obj?.Appearance != null) {
     out.Appearance = clampTextToBox(obj.Appearance, 220);
   }
+  
+  const genitalAppearanceRaw =
+  obj?.GenitalAppearance ??
+  obj?.genitalAppearance ??
+  obj?.GENITAL_APPEARANCE;
 
+  if (genitalAppearanceRaw != null) {
+    out.GenitalAppearance = clampTextToBox(genitalAppearanceRaw, 220);
+  }
+  
   return out;
 }
 
@@ -241,6 +253,16 @@ function buildAppearanceRow(appearance) {
     <div class="st-meta">
       <div class="st-meta-label">Appearance:</div>
       <textarea class="st-appearance" rows="3" readonly>${escapeHtml(text)}</textarea>
+    </div>
+  `;
+}
+
+function buildGenitalAppearanceRow(text) {
+  const safe = clampTextToBox(text ?? "No data yet.", 220);
+  return `
+    <div class="st-meta">
+      <div class="st-meta-label">Genital appearance:</div>
+      <textarea class="st-appearance" rows="3" readonly>${escapeHtml(safe)}</textarea>
     </div>
   `;
 }
@@ -650,6 +672,7 @@ $(async () => {
     console.error("[StatsTracker] Failed to initialize:", e);
   }
 });
+
 
 
 

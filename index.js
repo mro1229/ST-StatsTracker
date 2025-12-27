@@ -23,7 +23,7 @@ Rules:
 - Prefer small, realistic changes per update unless the messages clearly indicate a big change.
 - Arousal equals to sexual arousal.
 - Try to update each values as realistically as possible according to the current story.
-- GenitalSize: realistic adult size in centimeters. GenitalSize should rarely change. Treat it as a physical constant.
+- GenitalSize: realistic adult size in centimeters. Clamp to 0–100. GenitalSize should rarely change. Treat it as a physical constant.
 `;
 
 const DEFAULTS = {
@@ -136,7 +136,7 @@ if (obj?.GenitalSize != null || obj?.genitalSize != null) {
   const n = Number(raw);
   if (Number.isFinite(n)) {
     // Clamp to a sane range and keep one decimal
-    out.GenitalSize = Math.max(0, Math.min(40, Math.round(n * 10) / 10));
+    out.GenitalSize = Math.max(0, Math.min(100, Math.round(n * 10) / 10));
   }
 }
 
@@ -304,7 +304,7 @@ function render(kind) {
     ${buildStatRow("Energy", stats.Energy)}
     ${buildStatRow("Hygiene", stats.Hygiene)}
     ${buildStatRow("Arousal", stats.Arousal)}
-    ${buildCmRow("Genital size", stats.GenitalSize, 40)}
+    ${buildCmRow("Genital size", stats.GenitalSize, 100)}
     ${buildMoodRow(stats.Mood)}
     ${buildConditionsRow(conditions)}
     ${buildAppearanceRow(stats.Appearance)}
@@ -650,6 +650,7 @@ $(async () => {
     console.error("[StatsTracker] Failed to initialize:", e);
   }
 });
+
 
 
 

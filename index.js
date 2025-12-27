@@ -86,6 +86,30 @@ function initSettings() {
   }
 }
 
+function resetStateToDefaults() {
+  const settings = extension_settings[MODULE_NAME];
+  settings.state = structuredClone(DEFAULTS.state);
+  saveSettingsDebounced();
+
+  // If panels are visible, re-render immediately
+  if (UI.visible.user) render("user");
+  if (UI.visible.bot) render("bot");
+
+  console.log("[StatsTracker] State reset to defaults.");
+}
+
+function shouldResetOnChatChange(oldCtx, newCtx) {
+  // We want to reset when character changes OR chat id changes
+  // Defensive: context structure can vary, so we check what we can.
+  const oldChar = oldCtx?.characterId;
+  const newChar = newCtx?.characterId;
+
+  const oldChatId = oldCtx?.chatId ?? oldCtx?.chat_id ?? oldCtx?.chat?.id;
+  const newChatId = newCtx?.chatId ?? newCtx?.chat_id ?? newCtx?.chat?.id;
+
+  return oldChar !== newChar || (oldChatId && newChatId && oldChatId !== newChatId);
+}
+
 const clamp = (v) => {
   const n = Number(v);
   if (!Number.isFinite(n)) return null;
@@ -641,32 +665,84 @@ function updateForCurrentCharacter() {
   }
 }
 
+let lastCharId = null;
+let lastChatId = null;
+
+function captureChatIdentity(ctx) {
+  lastCharId = ctx?.characterId ?? null;
+  lastChatId = ctx?.chatId ?? ctx?.chat_id ?? ctx?.chat?.id ?? null;
+}
+
 function setupEventListeners() {
   const ctx = getContext();
   const { eventSource, event_types } = ctx;
 
   // Be pragmatic: assume ready immediately.
-  // APP_READY may have fired before this extension loaded.
   appInitialized = true;
+
+  // Capture initial identity so we can detect real changes
+  captureChatIdentity(ctx);
 
   if (event_types.APP_READY) {
     eventSource.on(event_types.APP_READY, () => {
       appInitialized = true;
       console.log("[StatsTracker] APP_READY");
+      captureChatIdentity(getContext());
     });
   }
+
+  const onChatOrCharacterChanged = () => {
+    const now = getContext();
+
+    const newCharId = now?.characterId ?? null;
+    const newChatId = now?.chatId ?? now?.chat_id ?? now?.chat?.id ?? null;
+
+    const charChanged = newCharId !== lastCharId;
+
+    // If chatId exists, trust it. If not, do a fallback check based on first message signature.
+    let chatChanged = false;
+    if (newChatId && lastChatId) {
+      chatChanged = newChatId !== lastChatId;
+    } else if (Array.isArray(now?.chat)) {
+      // Fallback: detect "new chat" by checking the first message text+name signature.
+      // (Not perfect, but better than nothing when chatId is missing.)
+      const first = now.chat[0];
+      const sig = first ? `${first?.name ?? ""}|${first?.is_user ? "U" : "A"}|${(first?.mes ?? "").slice(0, 60)}` : "";
+      const lastSig = setupEventListeners._lastFirstSig ?? "";
+      chatChanged = sig !== lastSig;
+      setupEventListeners._lastFirstSig = sig;
+    }
+
+    console.log("[StatsTracker] Chat/Character change detected:", {
+      lastCharId,
+      newCharId,
+      lastChatId,
+      newChatId,
+      charChanged,
+      chatChanged,
+    });
+
+    // Always refresh titles/render for the current character
+    updateForCurrentCharacter();
+
+    // Reset stats when switching to a different character OR different chat
+    if (charChanged || chatChanged) {
+      resetStateToDefaults();     // <--- you must have this function
+      captureChatIdentity(now);
+    }
+  };
 
   if (event_types.CHAT_CHANGED) {
     eventSource.on(event_types.CHAT_CHANGED, () => {
       console.log("[StatsTracker] CHAT_CHANGED");
-      updateForCurrentCharacter();
+      onChatOrCharacterChanged();
     });
   }
 
   if (event_types.CHARACTER_CHANGED) {
     eventSource.on(event_types.CHARACTER_CHANGED, () => {
       console.log("[StatsTracker] CHARACTER_CHANGED");
-      updateForCurrentCharacter();
+      onChatOrCharacterChanged();
     });
   }
 
@@ -714,6 +790,7 @@ $(async () => {
     console.error("[StatsTracker] Failed to initialize:", e);
   }
 });
+
 
 
 

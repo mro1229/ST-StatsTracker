@@ -34,8 +34,8 @@ Rules:
 - Prefer small, realistic changes per update unless the messages clearly indicate a big change.
 - Arousal equals to sexual arousal.
 - Try to update each values as realistically as possible according to the current story.
-- GSize: realistic adult size in centimeters. Clamp to 0–100. GenitalSize should rarely change. Treat it as a physical constant.
-- GDesc: description of current genital appearance (penis, pubes and testicles). Focus on shape, skin, fluids (precum/cum), hair, hardness (flaccid, semi-hard, hard) and general physical characteristics. (aim ~200 chars).
+- GSize: realistic adult size in centimeters. Clamp to 0–100. GenitalSize should reflect actual size and change (grow larger) if the penis becomes bigger due to erection.
+- GDesc: detailed description of current genital appearance, characteristics, status and traits (penis, foreskin, pubes, testicles etc.). Focus on shape, skin, foreskin, fluids (pre-cum/cum), hair, hardness (flaccid, semi-hard, hard) and general physical characteristics. (aim ~300 chars).
 `;
 
 const DEFAULTS = {
@@ -851,6 +851,7 @@ $(async () => {
     console.error("[StatsTracker] Failed to initialize:", e);
   }
 });
+
 
 
 

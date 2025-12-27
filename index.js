@@ -1,395 +1,323 @@
-// StatsTracker.js
-(() => {
-  // ===== Extension wiring (ST-style) =====
-  const MODULE_NAME = 'stats_tracker';
+import { getContext, extension_settings } from "../../../extensions.js";
+import { saveSettingsDebounced } from "../../../../script.js";
 
-  // ST brukar exposa extension_settings + saveSettingsDebounced globalt
-  window.extension_settings = window.extension_settings || {};
-  const _defaults = {
-    enableSysMessages: true,
-    autoOpenBot:  true,
-    autoOpenUser: true,
-    autoUpdate:   true,   // styr MutationObservern
-    autoStatsPrompt: ''   // reserverad om du senare vill pusha system-prompter
-  };
-  extension_settings[MODULE_NAME] = Object.assign({}, _defaults, extension_settings[MODULE_NAME] || {});
-  const saveSettingsDebounced = window.saveSettingsDebounced || (()=>{});
+console.log("[StatsTracker] Loading extension...");
 
-  // ===== Panel + state =====
-  const USER_PANEL_ID = 'user-stats-panel';
-  const BOT_PANEL_ID  = 'bot-stats-panel';
-  const STORAGE_KEY   = 'stats-tracker-v1';
-  const DEFAULT_USER_NAME = (window.STT_USER_NAME || 'User');
-  const DEFAULT_BOT_NAME  = (window.STT_BOT_NAME  || 'Assistant');
+const MODULE_NAME = "stats_tracker";
 
-  const DEFAULT_STATS = {
-    Health: 80,
-    Sustenance: 80,  // "Nutrition" eller "Satiety" är språkligt snyggare, men vi behåller Sustenance för kompatibilitet
-    Energy: 80,
-    Hygiene: 80,
-    Arousal: 10,
-    Mood: 'Neutral',
-    Conditions: []
-  };
+const DEFAULT_SYSTEM_PROMPT = `You are a stats tracking system for roleplay chat.
 
-  const state = loadState() || {
-    userName: DEFAULT_USER_NAME,
-    botName: DEFAULT_BOT_NAME,
-    user: { ...DEFAULT_STATS },
-    bot:  { ...DEFAULT_STATS, Arousal: 0 },
-    presets: { user: {}, bot: {} },
-    visible: { user: true, bot: true }
-  };
+Your job: infer and update the CURRENT stats for BOTH characters (the user and the assistant character) based on the recent conversation and the current stats.
 
-  // -------------- Utilities --------------
-  function clamp(n, min=0, max=100) {
-    n = Number(n);
-    if (Number.isNaN(n)) return 0;
-    return Math.min(max, Math.max(min, Math.round(n)));
-  }
+Rules:
+- Output MUST be valid JSON, and ONLY JSON. No Markdown fences, no commentary.
+- Use this exact shape:
+{
+  "user": { "Health": 0-100, "Sustenance": 0-100, "Energy": 0-100, "Hygiene": 0-100, "Arousal": 0-100, "Mood": "string", "Conditions": ["string", "..."] },
+  "bot":  { same fields as user }
+}
+- Clamp numeric values to 0..100.
+- Conditions: pick up to 3 concise tags (single words or short phrases). If unknown, guess.
+- Mood: a short descriptive word/phrase (e.g., "Neutral", "Happy", "Anxious", "Playful").
+- Prefer small, realistic changes per update unless the messages clearly indicate a big change.
+`;
 
-  function persist() {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch {}
-  }
-  function loadState() {
-    try { return JSON.parse(localStorage.getItem(STORAGE_KEY)); } catch { return null; }
-  }
-
-  function createEl(tag, attrs={}, html='') {
-    const el = document.createElement(tag);
-    Object.entries(attrs).forEach(([k,v]) => el.setAttribute(k, v));
-    if (html !== undefined && html !== null) el.innerHTML = html;
-    return el;
-  }
-
-  function makeDraggable(panel, handle) {
-    let sx=0, sy=0, ox=0, oy=0, dragging=false;
-    handle.addEventListener('mousedown', (e) => {
-      dragging = true;
-      sx = e.clientX; sy = e.clientY;
-      const rect = panel.getBoundingClientRect();
-      ox = rect.left; oy = rect.top;
-      document.addEventListener('mousemove', onMove);
-      document.addEventListener('mouseup', onUp);
-      e.preventDefault();
-    });
-    function onMove(e){
-      if (!dragging) return;
-      const dx = e.clientX - sx;
-      const dy = e.clientY - sy;
-      panel.style.left = (ox + dx) + 'px';
-      panel.style.top  = (oy + dy) + 'px';
-      panel.style.right = 'auto';
-    }
-    function onUp(){
-      dragging = false;
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-    }
-  }
-
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  }
-  function escapeAttr(s) {
-    return escapeHtml(s).replace(/"/g, '&quot;');
-  }
-
-  // -------------- Panel rendering --------------
-  function statRow(label, field, value) {
-    const v = clamp(value);
-    return `
-      <div class="stat-row">
-        <div class="stat-label">${escapeHtml(label)}:</div>
-        <div class="stat-bar" data-value="${v}">
-          <div class="stat-mask" style="width: calc(100% - ${v}%);"></div>
-        </div>
-        <div class="stat-value">${v}%</div>
-        <input class="stat-input" data-field="${field}" type="number" min="0" max="100" value="${v}">
-      </div>`;
-  }
-
-  function metaRow(label, field, value, kind) {
-    const val = field === 'Conditions' ? escapeHtml((value || []).join(', ')) : escapeHtml(value || '');
-    const ph  = field === 'Conditions' ? 'comma,separated,tags' : 'Mood...';
-    return `
-      <div class="meta-row">
-        <div class="meta-label">${escapeHtml(label)}:</div>
-        <input class="meta-input" data-field="${field}" data-k="${kind}" type="text" placeholder="${ph}" value="${val}">
-      </div>`;
-  }
-
-  function actionsRow(kind) {
-    return `
-      <div class="actions-row">
-        <button class="stats-btn" data-action="reset" data-k="${kind}">Reset</button>
-        <button class="stats-btn" data-action="save-preset" data-k="${kind}">Spara preset</button>
-        <button class="stats-btn" data-action="load-last" data-k="${kind}">Ladda senast</button>
-        <span class="stats-btn icon" data-action="min" title="Minimize">_</span>
-        <span class="stats-btn icon" data-action="close" title="Close">×</span>
-      </div>`;
-  }
-
-  function renderPresets(kind, panelEl) {
-    const wrapId = `${kind}-stats-presets`;
-    let host = panelEl.querySelector(`#${wrapId}`);
-    if (!host) {
-      host = createEl('div', { id: wrapId, class: 'presets-wrap' });
-      panelEl.querySelector('.stats-content').appendChild(host);
-    }
-    host.innerHTML = `<div class="presets-title">Presets</div><div class="presets-list"></div>`;
-    const listEl = host.querySelector('.presets-list');
-
-    const map = state.presets[kind] || {};
-    Object.keys(map).forEach(key => {
-      const row = createEl('div', { class: 'preset-row' });
-      row.innerHTML = `
-        <div>${escapeHtml(key)}</div>
-        <div>
-          <button class="stats-btn" data-action="use-preset" data-k="${kind}" data-id="${escapeAttr(key)}">Ladda</button>
-          <button class="stats-btn" data-action="del-preset" data-k="${kind}" data-id="${escapeAttr(key)}">Radera</button>
-        </div>`;
-      listEl.appendChild(row);
-    });
-  }
-
-  function renderPanel(kind) {
-    const id   = kind === 'user' ? USER_PANEL_ID : BOT_PANEL_ID;
-    const name = kind === 'user' ? state.userName : state.botName;
-    const stats= kind === 'user' ? state.user : state.bot;
-
-    let panel = document.getElementById(id);
-    if (!panel) {
-      panel = createEl('div', { id, class: 'stats-panel' });
-      panel.innerHTML = `
-        <div class="stats-header">
-          <h3>${escapeHtml(name)}'s Stats</h3>
-          <div class="stats-actions">
-            <span class="stats-btn icon" data-action="min">_</span>
-            <span class="stats-btn icon" data-action="close">×</span>
-          </div>
-        </div>
-        <div class="stats-content"></div>
-      `;
-      document.body.appendChild(panel);
-      makeDraggable(panel, panel.querySelector('.stats-header'));
-    }
-
-    const content = panel.querySelector('.stats-content');
-    content.innerHTML = `
-      ${statRow('Health', 'Health', stats.Health)}
-      ${statRow('Sustenance', 'Sustenance', stats.Sustenance)}
-      ${statRow('Energy', 'Energy', stats.Energy)}
-      ${statRow('Hygiene', 'Hygiene', stats.Hygiene)}
-      ${statRow('Arousal', 'Arousal', stats.Arousal)}
-      ${metaRow('Mood', 'Mood', stats.Mood, kind)}
-      ${metaRow('Conditions', 'Conditions', stats.Conditions, kind)}
-      ${actionsRow(kind)}
-    `;
-
-    // events
-    content.querySelectorAll('.stat-input').forEach(inp => {
-      inp.addEventListener('input', onStatInputLive);
-      inp.addEventListener('change', onStatInputChange);
-    });
-    content.querySelectorAll('.meta-input').forEach(inp => inp.addEventListener('change', onMetaChange));
-    content.querySelectorAll('.stats-btn').forEach(btn => btn.addEventListener('click', onActionClick));
-
-    renderPresets(kind, panel);
-
-    // show/hide
-    panel.style.display = state.visible[kind] ? 'block' : 'none';
-    panel.querySelector('.stats-header h3').textContent = `${name}'s Stats`;
-  }
-
-  function findKindFromInput(inp) {
-    const panel = inp.closest('.stats-panel');
-    return panel && panel.id.includes('user') ? 'user' : 'bot';
-  }
-
-  // Live uppdatering av procentfältet
-  function onStatInputLive(e) {
-    const inp = e.currentTarget;
-    let v = clamp(inp.value);
-    inp.value = v;
-    const row = inp.closest('.stat-row');
-    row.querySelector('.stat-value').textContent = `${v}%`;
-    row.querySelector('.stat-mask').style.width = `calc(100% - ${v}%)`;
-  }
-
-  function onStatInputChange(e) {
-    const inp = e.currentTarget;
-    const field = inp.getAttribute('data-field');
-    const kind = findKindFromInput(inp);
-    state[kind][field] = clamp(inp.value);
-    persist();
-  }
-
-  function onMetaChange(e) {
-    const inp = e.currentTarget;
-    const kind = inp.getAttribute('data-k');
-    const field = inp.getAttribute('data-field');
-    const v = String(inp.value || '');
-    if (field === 'Conditions') {
-      state[kind].Conditions = v.split(',').map(s => s.trim()).filter(Boolean);
-    } else {
-      state[kind][field] = v;
-    }
-    persist();
-  }
-
-  function onActionClick(e) {
-    const el = e.currentTarget;
-    const action = el.getAttribute('data-action');
-    const kind = el.getAttribute('data-k');
-
-    if (action === 'min') {
-      el.closest('.stats-panel').classList.toggle('minimized');
-      return;
-    }
-    if (action === 'close') {
-      const panel = el.closest('.stats-panel');
-      const k = panel.id.includes('user') ? 'user' : 'bot';
-      state.visible[k] = false; persist();
-      panel.style.display = 'none';
-      return;
-    }
-    if (action === 'reset') {
-      if (kind === 'user') state.user = { ...DEFAULT_STATS };
-      else state.bot = { ...DEFAULT_STATS, Arousal: 0 };
-      persist();
-      renderPanel(kind);
-      return;
-    }
-    if (action === 'save-preset') {
-      const name = prompt('Namn på preset?');
-      if (!name) return;
-      state.presets[kind][name] = JSON.parse(JSON.stringify(state[kind]));
-      persist();
-      renderPresets(kind, document.getElementById(kind === 'user' ? USER_PANEL_ID : BOT_PANEL_ID));
-      return;
-    }
-    if (action === 'load-last') {
-      alert('Ingen historikstack implementerad. Använd presets så länge.');
-      return;
-    }
-    if (action === 'use-preset') {
-      const id = el.getAttribute('data-id');
-      const src = state.presets[kind]?.[id];
-      if (!src) return;
-      state[kind] = JSON.parse(JSON.stringify(src));
-      persist();
-      renderPanel(kind);
-      return;
-    }
-    if (action === 'del-preset') {
-      const id = el.getAttribute('data-id');
-      if (state.presets[kind]?.[id]) delete state.presets[kind][id];
-      persist();
-      renderPresets(kind, document.getElementById(kind === 'user' ? USER_PANEL_ID : BOT_PANEL_ID));
-      return;
-    }
-  }
-
-  // -------------- Lättviktig "lös parser" (om du vill importera från text i chatten) --------------
-  function parseLooseYaml(src) {
-    const out = {};
-    let cur = null;
-    src.split(/\r?\n/).forEach(line => {
-      const l = line.trim();
-      if (!l) return;
-      if (/^user\s*:/.test(l)) { cur = 'user'; out.user = {}; return; }
-      if (/^bot\s*:/.test(l))  { cur = 'bot';  out.bot  = {}; return; }
-      const m = l.match(/^([A-Za-z]+)\s*:\s*(.+)$/);
-      if (m && cur) {
-        let key = m[1];
-        let val = m[2].trim();
-        if (/^\[.*\]$/.test(val)) {
-          val = val.slice(1,-1).split(',').map(s => s.trim().replace(/^"(.*)"$/,'$1').replace(/^'(.*)'$/,'$1')).filter(Boolean);
-        } else if (/^[0-9]+$/.test(val)) {
-          val = Number(val);
-        } else {
-          val = val.replace(/^"(.*)"$/,'$1').replace(/^'(.*)'$/,'$1');
-        }
-        if (!out[cur]) out[cur] = {};
-        out[cur][key] = val;
-      }
-    });
-    return out;
-  }
-
-  function parseAndUpdateFromMessage(text) {
-    if (!text || typeof text !== 'string') return;
-    const fence = text.match(/```([\s\S]*?)```/);
-    const raw = fence ? fence[1] : text;
-    const obj = parseLooseYaml(raw);
-    if (obj.user) mergeStats(state.user, obj.user);
-    if (obj.bot)  mergeStats(state.bot, obj.bot);
-    persist();
-    renderPanel('user'); renderPanel('bot');
-  }
-
-  function mergeStats(target, obj) {
-    ['Health','Sustenance','Energy','Hygiene','Arousal'].forEach(k => {
-      if (obj[k] != null) target[k] = clamp(obj[k]);
-    });
-    if (obj.Mood != null) target.Mood = String(obj.Mood);
-    if (obj.Conditions != null) {
-      if (Array.isArray(obj.Conditions)) target.Conditions = obj.Conditions.map(String);
-      else target.Conditions = String(obj.Conditions).split(',').map(s => s.trim()).filter(Boolean);
-    }
-  }
-
-  // -------------- Chat hook / MutationObserver --------------
-  const chatRoot = document.querySelector('#chat') || document.body;
-  let observerEnabled = !!extension_settings[MODULE_NAME].autoUpdate;
-
-  const obs = new MutationObserver(muts => {
-    if (!observerEnabled) return;
-    for (const m of muts) {
-      if (m.addedNodes && m.addedNodes.length) {
-        m.addedNodes.forEach(n => {
-          if (!(n instanceof HTMLElement)) return;
-          if (n.matches?.('.assistant, .ai, .chat-assistant, .mes.ai_text')) {
-            const text = n.innerText || n.textContent || '';
-            parseAndUpdateFromMessage(text);
-          } else {
-            const ai = n.querySelector?.('.assistant, .ai, .chat-assistant, .mes.ai_text');
-            if (ai) parseAndUpdateFromMessage(ai.innerText || ai.textContent || '');
-          }
-        });
-      }
-    }
-  });
-  obs.observe(chatRoot, { childList: true, subtree: true });
-
-  // Exponera liten switch för settings-UI
-  window.StatsTrackerEnableAutoUpdate = function (on) {
-    observerEnabled = !!on;
-  };
-
-  // -------------- API på window --------------
-  window.StatsTracker = {
-    showUser(v=true){ state.visible.user = !!v; persist(); renderPanel('user'); },
-    showBot(v=true){ state.visible.bot = !!v; persist(); renderPanel('bot'); },
-    setNames({user, bot}) {
-      if (user) state.userName = user;
-      if (bot)  state.botName  = bot;
-      persist();
-      renderPanel('user'); renderPanel('bot');
+const DEFAULTS = {
+  enableSysMessages: true,
+  autoOpenUser: true,
+  autoOpenBot: true,
+  autoUpdate: true,
+  systemPrompt: DEFAULT_SYSTEM_PROMPT,
+  recentMessageCount: 8,
+  state: {
+    user: {
+      Health: 80,
+      Sustenance: 80,
+      Energy: 80,
+      Hygiene: 80,
+      Arousal: 10,
+      Mood: "Neutral",
+      Conditions: ["none"],
     },
-    importFromMessage(text){ parseAndUpdateFromMessage(text); },
-    getState(){ return JSON.parse(JSON.stringify(state)); }
-  };
+    bot: {
+      Health: 80,
+      Sustenance: 80,
+      Energy: 80,
+      Hygiene: 80,
+      Arousal: 10,
+      Mood: "Neutral",
+      Conditions: ["none"],
+    },
+  },
+};
 
-  // -------------- Settings UI (Extensions-fliken) --------------
-  function createSettingsUI() {
-    if (typeof $ !== 'function') return; // jQuery krävs i ST UI
-    const $host = $("#extensions_settings");
-    if (!$host.length) return;
+function initSettings() {
+  if (!extension_settings[MODULE_NAME]) {
+    extension_settings[MODULE_NAME] = structuredClone(DEFAULTS);
+  } else {
+    extension_settings[MODULE_NAME] = Object.assign(
+      structuredClone(DEFAULTS),
+      extension_settings[MODULE_NAME]
+    );
 
-    const settingsHtml = `
-    <div class="outfit-extension-settings">
+    extension_settings[MODULE_NAME].state =
+      extension_settings[MODULE_NAME].state || structuredClone(DEFAULTS.state);
+
+    extension_settings[MODULE_NAME].state.user = Object.assign(
+      structuredClone(DEFAULTS.state.user),
+      extension_settings[MODULE_NAME].state.user || {}
+    );
+
+    extension_settings[MODULE_NAME].state.bot = Object.assign(
+      structuredClone(DEFAULTS.state.bot),
+      extension_settings[MODULE_NAME].state.bot || {}
+    );
+  }
+}
+
+const clamp = (v) => {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(100, Math.round(n)));
+};
+
+function normalizeStats(obj) {
+  const out = {};
+  for (const key of ["Health", "Sustenance", "Energy", "Hygiene", "Arousal"]) {
+    const c = clamp(obj?.[key]);
+    if (c !== null) out[key] = c;
+  }
+
+  if (obj?.Mood != null) out.Mood = String(obj.Mood).trim().slice(0, 60) || "Neutral";
+
+  if (obj?.Conditions != null) {
+    let arr = obj.Conditions;
+    if (typeof arr === "string") {
+      arr = arr.split(/,|\n/).map((s) => s.trim()).filter(Boolean);
+    }
+    if (!Array.isArray(arr)) arr = [];
+    arr = arr.map((s) => String(s).trim()).filter(Boolean).slice(0, 3);
+    out.Conditions = arr.length ? arr : ["none"];
+  }
+
+  return out;
+}
+
+function mergeInto(target, patch) {
+  if (!patch) return;
+  for (const [k, v] of Object.entries(patch)) target[k] = v;
+}
+
+function escapeHtml(str) {
+  return String(str)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function makeEl(tag, attrs = {}, html = "") {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") el.className = v;
+    else el.setAttribute(k, v);
+  }
+  if (html) el.innerHTML = html;
+  return el;
+}
+
+const UI = {
+  visible: { user: false, bot: false },
+  minimized: { user: false, bot: false },
+};
+
+function getCurrentBotName() {
+  try {
+    const ctx = getContext();
+    const char = ctx?.characters?.[ctx.characterId];
+    return (char?.name || "Character").trim();
+  } catch {
+    return "Character";
+  }
+}
+
+function buildStatRow(label, value) {
+  const pct = clamp(value) ?? 0;
+  return `
+    <div class="st-row">
+      <div class="st-label">${escapeHtml(label)}:</div>
+      <div class="st-barwrap">
+        <div class="st-bar" style="width:${pct}%"></div>
+      </div>
+      <div class="st-value">${pct}%</div>
+    </div>
+  `;
+}
+
+function buildMoodRow(mood) {
+  const m = (mood ?? "Neutral").toString().trim();
+  return `
+    <div class="st-meta">
+      <div class="st-meta-label">Mood:</div>
+      <div class="st-meta-value">${escapeHtml(m || "Neutral")}</div>
+    </div>
+  `;
+}
+
+function buildConditionsRow(conditions) {
+  const arr = Array.isArray(conditions) ? conditions : [];
+  const lines = arr.slice(0, 3).map((s) => String(s).trim()).filter(Boolean);
+  const text = lines.length ? lines.join("\n") : "none";
+  return `
+    <div class="st-meta">
+      <div class="st-meta-label">Conditions:</div>
+      <textarea class="st-conditions" rows="3" readonly>${escapeHtml(text)}</textarea>
+    </div>
+  `;
+}
+
+function ensurePanel(kind) {
+  const id = kind === "user" ? "st-user-panel" : "st-bot-panel";
+  let el = document.getElementById(id);
+  if (el) return el;
+
+  el = makeEl("div", { id, class: "stats-panel" });
+  el.innerHTML = `
+    <div class="stats-header">
+      <h3 class="stats-title"></h3>
+      <div class="stats-actions">
+        <span class="stats-btn icon" data-action="min">−</span>
+        <span class="stats-btn icon" data-action="close">×</span>
+      </div>
+    </div>
+    <div class="stats-content"></div>
+  `;
+  document.body.appendChild(el);
+
+  el.querySelector('[data-action="close"]')?.addEventListener("click", () => hidePanel(kind));
+  el.querySelector('[data-action="min"]')?.addEventListener("click", () => toggleMinimize(kind));
+
+  makeDraggable(el, el.querySelector(".stats-header"));
+  return el;
+}
+
+function setPanelTitle(kind) {
+  const el = ensurePanel(kind);
+  const title = el.querySelector(".stats-title");
+  if (!title) return;
+
+  if (kind === "user") title.textContent = "Your Stats";
+  else title.textContent = `${getCurrentBotName()}'s Stats`;
+}
+
+function render(kind) {
+  const settings = extension_settings[MODULE_NAME];
+  const stats = kind === "user" ? settings.state.user : settings.state.bot;
+
+  const el = ensurePanel(kind);
+  setPanelTitle(kind);
+
+  const content = el.querySelector(".stats-content");
+  if (!content) return;
+
+  if (UI.minimized[kind]) {
+    content.style.display = "none";
+    return;
+  } else {
+    content.style.display = "block";
+  }
+
+  const conditions = Array.isArray(stats.Conditions) ? stats.Conditions : ["none"];
+
+  content.innerHTML = `
+    ${buildStatRow("Health", stats.Health)}
+    ${buildStatRow("Sustenance", stats.Sustenance)}
+    ${buildStatRow("Energy", stats.Energy)}
+    ${buildStatRow("Hygiene", stats.Hygiene)}
+    ${buildStatRow("Arousal", stats.Arousal)}
+    ${buildMoodRow(stats.Mood)}
+    ${buildConditionsRow(conditions)}
+  `;
+}
+
+function showPanel(kind) {
+  const el = ensurePanel(kind);
+  setPanelTitle(kind);
+  el.style.display = "flex";
+  UI.visible[kind] = true;
+  render(kind);
+}
+
+function hidePanel(kind) {
+  const el = ensurePanel(kind);
+  el.style.display = "none";
+  UI.visible[kind] = false;
+  UI.minimized[kind] = false;
+
+  const minBtn = el.querySelector('[data-action="min"]');
+  if (minBtn) minBtn.textContent = "−";
+}
+
+function toggleMinimize(kind) {
+  UI.minimized[kind] = !UI.minimized[kind];
+  const el = ensurePanel(kind);
+  const minBtn = el.querySelector('[data-action="min"]');
+  if (minBtn) minBtn.textContent = UI.minimized[kind] ? "+" : "−";
+  render(kind);
+}
+
+// Tiny draggable (no jQuery needed)
+function makeDraggable(panelEl, handleEl) {
+  if (!panelEl || !handleEl) return;
+
+  let dragging = false;
+  let startX = 0,
+    startY = 0,
+    startLeft = 0,
+    startTop = 0;
+
+  handleEl.style.cursor = "move";
+
+  handleEl.addEventListener("mousedown", (e) => {
+    if (e.target?.closest?.(".stats-actions")) return;
+
+    dragging = true;
+    startX = e.clientX;
+    startY = e.clientY;
+
+    const rect = panelEl.getBoundingClientRect();
+    startLeft = rect.left;
+    startTop = rect.top;
+
+    panelEl.style.position = "fixed";
+    panelEl.style.left = `${startLeft}px`;
+    panelEl.style.top = `${startTop}px`;
+
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+
+  function onMove(e) {
+    if (!dragging) return;
+    const dx = e.clientX - startX;
+    const dy = e.clientY - startY;
+    panelEl.style.left = `${startLeft + dx}px`;
+    panelEl.style.top = `${startTop + dy}px`;
+  }
+
+  function onUp() {
+    dragging = false;
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+  }
+}
+
+function createSettingsUI() {
+  const settings = extension_settings[MODULE_NAME];
+
+  const html = `
+    <div class="stats-tracker-settings">
       <div class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header">
           <b>Stats Tracker Settings</b>
@@ -397,124 +325,237 @@
         </div>
         <div class="inline-drawer-content">
           <div class="flex-container">
-            <label for="stats-sys-toggle">Enable system messages</label>
-            <input type="checkbox" id="stats-sys-toggle"
-              ${extension_settings[MODULE_NAME].enableSysMessages ? 'checked' : ''}>
+            <label for="st-enable-sys">Enable system messages</label>
+            <input type="checkbox" id="st-enable-sys" ${settings.enableSysMessages ? "checked" : ""}>
           </div>
-
           <div class="flex-container">
-            <label for="stats-auto-bot">Auto-open bot panel</label>
-            <input type="checkbox" id="stats-auto-bot"
-              ${extension_settings[MODULE_NAME].autoOpenBot ? 'checked' : ''}>
+            <label for="st-auto-open-user">Auto-open user panel</label>
+            <input type="checkbox" id="st-auto-open-user" ${settings.autoOpenUser ? "checked" : ""}>
           </div>
-
           <div class="flex-container">
-            <label for="stats-auto-user">Auto-open user panel</label>
-            <input type="checkbox" id="stats-auto-user"
-              ${extension_settings[MODULE_NAME].autoOpenUser ? 'checked' : ''}>
+            <label for="st-auto-open-bot">Auto-open character panel</label>
+            <input type="checkbox" id="st-auto-open-bot" ${settings.autoOpenBot ? "checked" : ""}>
           </div>
-
           <div class="flex-container">
-            <label for="stats-auto-update">Enable auto updates</label>
-            <input type="checkbox" id="stats-auto-update"
-              ${extension_settings[MODULE_NAME].autoUpdate ? 'checked' : ''}>
+            <label for="st-auto-update">Enable auto updates</label>
+            <input type="checkbox" id="st-auto-update" ${settings.autoUpdate ? "checked" : ""}>
           </div>
-
           <div class="flex-container">
-            <label for="stats-prompt-input">System Prompt (optional):</label>
-            <textarea id="stats-prompt-input" rows="4" placeholder="Enter system prompt for auto stats (optional)">${
-              extension_settings[MODULE_NAME].autoStatsPrompt || ''
-            }</textarea>
+            <label for="st-prompt">System Prompt:</label>
+            <textarea id="st-prompt" rows="8" placeholder="Enter a system prompt for the stats tracker">${escapeHtml(
+              settings.systemPrompt || ""
+            )}</textarea>
+          </div>
+          <div class="flex-container">
+            <button id="st-prompt-reset" class="menu_button">Reset to Default Prompt</button>
+            <button id="st-prompt-view" class="menu_button">View Current Prompt</button>
           </div>
         </div>
       </div>
-    </div>`;
+    </div>
+  `;
 
-    $host.append(settingsHtml);
+  $("#extensions_settings").append(html);
 
-    $("#stats-sys-toggle").on("input", function () {
-      extension_settings[MODULE_NAME].enableSysMessages = $(this).prop('checked');
-      saveSettingsDebounced();
-    });
+  $("#st-enable-sys").on("input", function () {
+    settings.enableSysMessages = $(this).prop("checked");
+    saveSettingsDebounced();
+  });
 
-    $("#stats-auto-bot").on("input", function () {
-      extension_settings[MODULE_NAME].autoOpenBot = $(this).prop('checked');
-      saveSettingsDebounced();
-      if ($(this).prop('checked')) StatsTracker.showBot(true);
-    });
+  $("#st-auto-open-user").on("input", function () {
+    settings.autoOpenUser = $(this).prop("checked");
+    saveSettingsDebounced();
+  });
 
-    $("#stats-auto-user").on("input", function () {
-      extension_settings[MODULE_NAME].autoOpenUser = $(this).prop('checked');
-      saveSettingsDebounced();
-      if ($(this).prop('checked')) StatsTracker.showUser(true);
-    });
+  $("#st-auto-open-bot").on("input", function () {
+    settings.autoOpenBot = $(this).prop("checked");
+    saveSettingsDebounced();
+  });
 
-    $("#stats-auto-update").on("input", function () {
-      const on = $(this).prop('checked');
-      extension_settings[MODULE_NAME].autoUpdate = on;
-      window.StatsTrackerEnableAutoUpdate(on);
-      saveSettingsDebounced();
-    });
+  $("#st-auto-update").on("input", function () {
+    settings.autoUpdate = $(this).prop("checked");
+    saveSettingsDebounced();
+  });
 
-    $("#stats-prompt-input").on("change", function () {
-      extension_settings[MODULE_NAME].autoStatsPrompt = $(this).val();
-      saveSettingsDebounced();
-    });
+  $("#st-prompt").on("change", function () {
+    settings.systemPrompt = $(this).val() || DEFAULTS.systemPrompt;
+    saveSettingsDebounced();
+  });
+
+  $("#st-prompt-reset").on("click", function () {
+    settings.systemPrompt = DEFAULTS.systemPrompt;
+    $("#st-prompt").val(settings.systemPrompt);
+    saveSettingsDebounced();
+    if (settings.enableSysMessages) toastr.info("System prompt reset to default.", "Stats Tracker");
+  });
+
+  $("#st-prompt-view").on("click", function () {
+    const p = settings.systemPrompt || "";
+    const preview = p.length > 160 ? p.slice(0, 160) + "..." : p;
+    toastr.info(
+      `Prompt preview: ${preview}\n\nFull length: ${p.length} characters`,
+      "Current System Prompt",
+      { timeOut: 15000, extendedTimeOut: 30000 }
+    );
+  });
+}
+
+// Auto update via local LLM after each AI message
+let appInitialized = false;
+let updateTimer = null;
+let isUpdating = false;
+
+function getRecentMessages(n) {
+  const ctx = getContext();
+  const chat = ctx?.chat;
+  if (!Array.isArray(chat) || chat.length === 0) return "";
+
+  const slice = chat.slice(-n);
+  return slice
+    .map((m) => {
+      const who = m?.is_user ? "User" : (m?.name || "Assistant");
+      const text = (m?.mes || "").replace(/\s+/g, " ").trim();
+      return `${who}: ${text}`;
+    })
+    .join("\n");
+}
+
+function buildAnalysisPrompt() {
+  const settings = extension_settings[MODULE_NAME];
+  const payload = {
+    user: settings.state.user,
+    bot: settings.state.bot,
+    botName: getCurrentBotName(),
+  };
+
+  const recent = getRecentMessages(settings.recentMessageCount || 8);
+
+  return [
+    settings.systemPrompt || DEFAULTS.systemPrompt,
+    "",
+    "Context:",
+    JSON.stringify(payload, null, 2),
+    "",
+    "Recent messages:",
+    recent || "(no messages)",
+  ].join("\n");
+}
+
+function safeParseJson(text) {
+  let t = String(text).trim();
+
+  const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) t = fence[1].trim();
+
+  // Grab first JSON object block (defensive)
+  const s = t.indexOf("{");
+  const e = t.lastIndexOf("}");
+  if (s !== -1 && e !== -1 && e > s) t = t.slice(s, e + 1);
+
+  try {
+    return JSON.parse(t);
+  } catch {
+    return null;
   }
+}
 
-  // === ST context integration (namn + event) ===
-  function integrateWithSTContext() {
-    try {
-      const ctxApi = window.SillyTavern?.getContext?.() || null;
-      if (!ctxApi) return;
+async function updateStatsFromLLM() {
+  const settings = extension_settings[MODULE_NAME];
+  if (!settings.autoUpdate) return;
+  if (!appInitialized) return;
+  if (isUpdating) return;
 
-      const refreshNames = () => {
-        try {
-          const context = window.SillyTavern.getContext();
-          const character = context.characters?.[context.characterId]?.name || 'Assistant';
-          state.botName = character;
-          persist();
-          renderPanel('bot');
-        } catch {}
-      };
+  isUpdating = true;
 
-      const { eventSource, event_types } = window.SillyTavern.getContext();
-      eventSource?.on?.(event_types.CHAT_CHANGED, refreshNames);
-      eventSource?.on?.(event_types.CHARACTER_CHANGED, refreshNames);
-      refreshNames();
-    } catch (e) {
-      console.warn('[StatsTracker] ST context integration failed:', e);
+  try {
+    const ctx = getContext();
+    const prompt = buildAnalysisPrompt();
+
+    let result = "";
+    if (typeof ctx.generateRaw === "function") {
+      result = await ctx.generateRaw({
+        prompt,
+        systemPrompt: "You update stats based on roleplay chat. Output ONLY valid JSON.",
+      });
+    } else if (typeof ctx.generateQuietPrompt === "function") {
+      result = await ctx.generateQuietPrompt({ quietPrompt: prompt });
+    } else {
+      console.warn("[StatsTracker] No generation function available (generateRaw/generateQuietPrompt).");
+      return;
     }
+
+    if (!result || typeof result !== "string") return;
+
+    const parsed = safeParseJson(result);
+    if (!parsed) {
+      console.warn("[StatsTracker] Bad JSON from model:", result);
+      if (settings.enableSysMessages) toastr.warning("Stats update failed (bad JSON).", "Stats Tracker");
+      return;
+    }
+
+    const userPatch = normalizeStats(parsed.user || {});
+    const botPatch = normalizeStats(parsed.bot || {});
+    mergeInto(settings.state.user, userPatch);
+    mergeInto(settings.state.bot, botPatch);
+
+    saveSettingsDebounced();
+
+    if (UI.visible.user) render("user");
+    if (UI.visible.bot) render("bot");
+  } catch (err) {
+    console.error("[StatsTracker] updateStatsFromLLM failed:", err);
+    if (extension_settings[MODULE_NAME].enableSysMessages) {
+      toastr.error("Stats update failed. Check console for details.", "Stats Tracker");
+    }
+  } finally {
+    isUpdating = false;
   }
+}
 
-  // -------------- First render --------------
-  renderPanel('user');
-  renderPanel('bot');
+function scheduleUpdate(delayMs = 1100) {
+  clearTimeout(updateTimer);
+  updateTimer = setTimeout(() => updateStatsFromLLM(), delayMs);
+}
 
-  // Visa per default enligt state
-  if (state.visible.user) document.getElementById(USER_PANEL_ID).style.display = 'block';
-  if (state.visible.bot)  document.getElementById(BOT_PANEL_ID).style.display  = 'block';
-
-  // Knyt ST-context
-  integrateWithSTContext();
-
-  // Skapa settings-UI när ST:s Extensions finns
-  if (typeof $ === 'function') {
-    const tryInitSettings = () => {
-      if (document.querySelector('#extensions_settings')) {
-        createSettingsUI();
-        if (extension_settings[MODULE_NAME].autoOpenBot) {
-          setTimeout(() => StatsTracker.showBot(true), 1000);
-        }
-        if (extension_settings[MODULE_NAME].autoOpenUser) {
-          setTimeout(() => StatsTracker.showUser(true), 1000);
-        }
-      } else {
-        setTimeout(tryInitSettings, 500);
-      }
-    };
-    tryInitSettings();
+function updateForCurrentCharacter() {
+  if (UI.visible.bot) {
+    setPanelTitle("bot");
+    render("bot");
   }
+}
 
-  console.log('[StatsTracker] loaded');
-})();
+function setupEventListeners() {
+  const ctx = getContext();
+  const { eventSource, event_types } = ctx;
+
+  eventSource.on(event_types.APP_READY, () => {
+    appInitialized = true;
+    console.log("[StatsTracker] APP_READY, will process new AI messages.");
+  });
+
+  eventSource.on(event_types.CHAT_CHANGED, updateForCurrentCharacter);
+  eventSource.on(event_types.CHARACTER_CHANGED, updateForCurrentCharacter);
+
+  eventSource.on(event_types.MESSAGE_RECEIVED, (data) => {
+    if (!data || data.is_user) return;
+    scheduleUpdate(1100);
+  });
+}
+
+function maybeAutoOpen() {
+  const settings = extension_settings[MODULE_NAME];
+  if (settings.autoOpenUser) setTimeout(() => showPanel("user"), 800);
+  if (settings.autoOpenBot) setTimeout(() => showPanel("bot"), 900);
+}
+
+$(async () => {
+  try {
+    initSettings();
+    createSettingsUI();
+    setupEventListeners();
+    maybeAutoOpen();
+    console.log("[StatsTracker] Loaded.");
+  } catch (e) {
+    console.error("[StatsTracker] Failed to initialize:", e);
+  }
+});

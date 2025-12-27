@@ -21,6 +21,8 @@ Rules:
 - Appearance: short free text (aim ~200 chars). Include physical traits + outfit. Use line breaks if helpful.
 - Mood: a short descriptive word/phrase (e.g., "Neutral", "Happy", "Anxious", "Playful").
 - Prefer small, realistic changes per update unless the messages clearly indicate a big change.
+- Arousal equals to sexual arousal.
+- Try to update each values as realistically as possible according to the current story.
 `;
 
 const DEFAULTS = {
@@ -616,3 +618,4 @@ $(async () => {
     console.error("[StatsTracker] Failed to initialize:", e);
   }
 });
+

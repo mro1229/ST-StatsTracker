@@ -311,6 +311,23 @@ function render(kind) {
   `;
 }
 
+function buildCmRow(label, value, maxCm = 40) {
+  const n = Number(value);
+  const cm = Number.isFinite(n) ? n : 0;
+  const clamped = Math.max(0, Math.min(maxCm, cm));
+  const widthPct = (clamped / maxCm) * 100;
+
+  return `
+    <div class="st-row">
+      <div class="st-label">${escapeHtml(label)}:</div>
+      <div class="st-barwrap">
+        <div class="st-bar" style="width:${widthPct}%"></div>
+      </div>
+      <div class="st-value">${clamped.toFixed(1).replace(/\.0$/, "")} cm</div>
+    </div>
+  `;
+}
+
 function showPanel(kind) {
   const el = ensurePanel(kind);
   setPanelTitle(kind);
@@ -633,5 +650,6 @@ $(async () => {
     console.error("[StatsTracker] Failed to initialize:", e);
   }
 });
+
 
 

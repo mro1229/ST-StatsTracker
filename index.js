@@ -13,7 +13,7 @@ Rules:
 - Output MUST be valid JSON, and ONLY JSON. No Markdown fences, no commentary.
 - Use this exact shape:
 {
-  "user": { "Health": 0-100, "Sustenance": 0-100, "Energy": 0-100, "Hygiene": 0-100, "Arousal": 0-100, "Mood": "string", "Conditions": ["string", "..."], "Appearance": "string" },
+  "user": { "Health": 0-100, "Sustenance": 0-100, "Energy": 0-100, "Hygiene": 0-100, "Arousal": 0-100, "GenitalSize": number (cm), "Mood": "string", "Conditions": ["string", "..."], "Appearance": "string" },
   "bot":  { same fields as user }
 }
 - Clamp numeric values to 0..100.
@@ -23,6 +23,7 @@ Rules:
 - Prefer small, realistic changes per update unless the messages clearly indicate a big change.
 - Arousal equals to sexual arousal.
 - Try to update each values as realistically as possible according to the current story.
+- GenitalSize: realistic adult size in centimeters. GenitalSize should rarely change. Treat it as a physical constant.
 `;
 
 const DEFAULTS = {
@@ -39,6 +40,7 @@ const DEFAULTS = {
       Energy: 80,
       Hygiene: 80,
       Arousal: 0,
+      GenitalSize: 0, // cm
       Mood: "Neutral",
       Conditions: ["none"],
       Appearance: "No data yet.",
@@ -49,6 +51,7 @@ const DEFAULTS = {
       Energy: 80,
       Hygiene: 80,
       Arousal: 0,
+      GenitalSize: 0, // cm
       Mood: "Neutral",
       Conditions: ["none"],
       Appearance: "No data yet.",
@@ -126,6 +129,17 @@ function normalizeStats(obj) {
     const c = clamp(obj?.[key]);
     if (c !== null) out[key] = c;
   }
+
+  // Genital size in cm (accept a number, keep realistic)
+if (obj?.GenitalSize != null || obj?.genitalSize != null) {
+  const raw = obj?.GenitalSize ?? obj?.genitalSize;
+  const n = Number(raw);
+  if (Number.isFinite(n)) {
+    // Clamp to a sane range and keep one decimal
+    out.GenitalSize = Math.max(0, Math.min(40, Math.round(n * 10) / 10));
+  }
+}
+
 
   if (obj?.Mood != null) out.Mood = String(obj.Mood).trim().slice(0, 60) || "Neutral";
 
@@ -290,6 +304,7 @@ function render(kind) {
     ${buildStatRow("Energy", stats.Energy)}
     ${buildStatRow("Hygiene", stats.Hygiene)}
     ${buildStatRow("Arousal", stats.Arousal)}
+    ${buildStatRow("Genital size", stats.GenitalSize)}
     ${buildMoodRow(stats.Mood)}
     ${buildConditionsRow(conditions)}
     ${buildAppearanceRow(stats.Appearance)}
@@ -618,4 +633,5 @@ $(async () => {
     console.error("[StatsTracker] Failed to initialize:", e);
   }
 });
+
 

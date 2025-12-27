@@ -13,11 +13,12 @@ Rules:
 - Output MUST be valid JSON, and ONLY JSON. No Markdown fences, no commentary.
 - Use this exact shape:
 {
-  "user": { "Health": 0-100, "Sustenance": 0-100, "Energy": 0-100, "Hygiene": 0-100, "Arousal": 0-100, "Mood": "string", "Conditions": ["string", "..."] },
+  "user": { "Health": 0-100, "Sustenance": 0-100, "Energy": 0-100, "Hygiene": 0-100, "Arousal": 0-100, "Mood": "string", "Conditions": ["string", "..."], "Appearance": "string" },
   "bot":  { same fields as user }
 }
 - Clamp numeric values to 0..100.
 - Conditions: pick up to 3 concise tags (single words or short phrases). If unknown, guess.
+- Appearance: short free text (aim ~200 chars). Include physical traits + outfit. Use line breaks if helpful.
 - Mood: a short descriptive word/phrase (e.g., "Neutral", "Happy", "Anxious", "Playful").
 - Prefer small, realistic changes per update unless the messages clearly indicate a big change.
 `;
@@ -35,18 +36,20 @@ const DEFAULTS = {
       Sustenance: 80,
       Energy: 80,
       Hygiene: 80,
-      Arousal: 10,
+      Arousal: 0,
       Mood: "Neutral",
       Conditions: ["none"],
+      Appearance: "No data yet.",
     },
     bot: {
       Health: 80,
       Sustenance: 80,
       Energy: 80,
       Hygiene: 80,
-      Arousal: 10,
+      Arousal: 0,
       Mood: "Neutral",
       Conditions: ["none"],
+      Appearance: "No data yet.",
     },
   },
 };
@@ -81,6 +84,40 @@ const clamp = (v) => {
   return Math.max(0, Math.min(100, Math.round(n)));
 };
 
+function clampTextToBox(str, maxChars = 220) {
+  // Keep it readable, compact, and not an LLM essay.
+  // Strategy:
+  // - Trim
+  // - Collapse excessive blank lines
+  // - Hard limit to maxChars (safe cut)
+  let t = String(str ?? "").trim();
+  if (!t) return "No data yet.";
+
+  // Normalize line breaks + trim each line
+  t = t
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l, idx, arr) => {
+      // keep line if it's not empty, or if it's a single empty line between text blocks
+      if (l) return true;
+      // allow at most one consecutive empty line
+      const prev = arr[idx - 1];
+      return prev && prev.trim() !== "";
+    })
+    .join("\n");
+
+  // Collapse huge whitespace blocks
+  t = t.replace(/[ \t]{2,}/g, " ");
+
+  if (t.length > maxChars) {
+    t = t.slice(0, maxChars).trimEnd();
+    // avoid ending mid-word if easy
+    t = t.replace(/\s+\S{0,12}$/, "").trimEnd() || t;
+    t += "…";
+  }
+  return t;
+}
+
 function normalizeStats(obj) {
   const out = {};
   for (const key of ["Health", "Sustenance", "Energy", "Hygiene", "Arousal"]) {
@@ -98,6 +135,10 @@ function normalizeStats(obj) {
     if (!Array.isArray(arr)) arr = [];
     arr = arr.map((s) => String(s).trim()).filter(Boolean).slice(0, 3);
     out.Conditions = arr.length ? arr : ["none"];
+  }
+
+  if (obj?.Appearance != null) {
+    out.Appearance = clampTextToBox(obj.Appearance, 220);
   }
 
   return out;
@@ -177,6 +218,17 @@ function buildConditionsRow(conditions) {
   `;
 }
 
+function buildAppearanceRow(appearance) {
+  const text = clampTextToBox(appearance ?? "No data yet.", 220);
+  // This is intentionally free-form. If it overflows, textarea scrollbars handle it.
+  return `
+    <div class="st-meta">
+      <div class="st-meta-label">Appearance:</div>
+      <textarea class="st-appearance" rows="3" readonly>${escapeHtml(text)}</textarea>
+    </div>
+  `;
+}
+
 function ensurePanel(kind) {
   const id = kind === "user" ? "st-user-panel" : "st-bot-panel";
   let el = document.getElementById(id);
@@ -238,6 +290,7 @@ function render(kind) {
     ${buildStatRow("Arousal", stats.Arousal)}
     ${buildMoodRow(stats.Mood)}
     ${buildConditionsRow(conditions)}
+    ${buildAppearanceRow(stats.Appearance)}
   `;
 }
 
@@ -497,6 +550,10 @@ async function updateStatsFromLLM() {
     const botPatch = normalizeStats(parsed.bot || {});
     mergeInto(settings.state.user, userPatch);
     mergeInto(settings.state.bot, botPatch);
+
+    // Ensure appearance always exists (defensive for older saved states)
+    if (!settings.state.user.Appearance) settings.state.user.Appearance = "No data yet.";
+    if (!settings.state.bot.Appearance) settings.state.bot.Appearance = "No data yet.";
 
     saveSettingsDebounced();
 

@@ -32,10 +32,10 @@ Rules:
 - Appearance: short free text (aim ~200 chars). Include physical traits + outfit. Use line breaks if helpful.
 - Mood: a short descriptive word/phrase (e.g., "Neutral", "Happy", "Anxious", "Playful").
 - Prefer small, realistic changes per update unless the messages clearly indicate a big change.
-- Arousal equals to sexual arousal.
+- Arousal equals to sexual arousal percentage.
 - Try to update each values as realistically as possible according to the current story.
-- GSize: realistic adult size in centimeters. Clamp to 0–100. GenitalSize should reflect actual size and change (grow larger) if the penis becomes bigger due to erection.
-- GDesc: detailed description of current genital appearance, characteristics, status and traits (penis, foreskin, pubes, testicles etc.). Focus on shape, skin, foreskin, fluids (pre-cum/cum), hair, hardness (flaccid, semi-hard, hard) and general physical characteristics. (aim ~300 chars).
+- GSize: realistic size in centimeters. Clamp to 0–100. GSize should reflect actual size and changes due to erection.
+- GDesc: detailed description of current genital appearance, characteristics, status and traits (penis, foreskin (if human), pubes, testicles etc.). Some animals have penis knots, penis pouches etc. Focus on shape, skin, foreskin, fluids (pre-cum/cum), hair, hardness (flaccid, semi-hard, hard) and general physical characteristics. (aim ~300 chars).
 `;
 
 const DEFAULTS = {
@@ -851,6 +851,7 @@ $(async () => {
     console.error("[StatsTracker] Failed to initialize:", e);
   }
 });
+
 
 
 

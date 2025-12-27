@@ -645,18 +645,56 @@ function setupEventListeners() {
   const ctx = getContext();
   const { eventSource, event_types } = ctx;
 
-  eventSource.on(event_types.APP_READY, () => {
-    appInitialized = true;
-    console.log("[StatsTracker] APP_READY, will process new AI messages.");
-  });
+  // Be pragmatic: assume ready immediately.
+  // APP_READY may have fired before this extension loaded.
+  appInitialized = true;
 
-  eventSource.on(event_types.CHAT_CHANGED, updateForCurrentCharacter);
-  eventSource.on(event_types.CHARACTER_CHANGED, updateForCurrentCharacter);
+  if (event_types.APP_READY) {
+    eventSource.on(event_types.APP_READY, () => {
+      appInitialized = true;
+      console.log("[StatsTracker] APP_READY");
+    });
+  }
 
-  eventSource.on(event_types.MESSAGE_RECEIVED, (data) => {
-    if (!data || data.is_user) return;
-    scheduleUpdate(1100);
-  });
+  if (event_types.CHAT_CHANGED) {
+    eventSource.on(event_types.CHAT_CHANGED, () => {
+      console.log("[StatsTracker] CHAT_CHANGED");
+      updateForCurrentCharacter();
+    });
+  }
+
+  if (event_types.CHARACTER_CHANGED) {
+    eventSource.on(event_types.CHARACTER_CHANGED, () => {
+      console.log("[StatsTracker] CHARACTER_CHANGED");
+      updateForCurrentCharacter();
+    });
+  }
+
+  // Classic path: message received (AI output)
+  if (event_types.MESSAGE_RECEIVED) {
+    eventSource.on(event_types.MESSAGE_RECEIVED, (data) => {
+      if (!data || data.is_user) return;
+      console.log("[StatsTracker] MESSAGE_RECEIVED → scheduling update");
+      scheduleUpdate(1100);
+    });
+  }
+
+  // More reliable in some ST versions / streaming modes:
+  // fire when generation actually ends
+  const generationEvents = [
+    "GENERATION_FINISHED",
+    "GENERATION_ENDED",
+    "GENERATION_STOPPED",
+  ];
+
+  for (const evt of generationEvents) {
+    if (event_types[evt]) {
+      eventSource.on(event_types[evt], () => {
+        console.log(`[StatsTracker] ${evt} → scheduling update`);
+        scheduleUpdate(300);
+      });
+    }
+  }
 }
 
 function maybeAutoOpen() {
@@ -676,6 +714,7 @@ $(async () => {
     console.error("[StatsTracker] Failed to initialize:", e);
   }
 });
+
 
 
 

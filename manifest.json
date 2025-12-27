@@ -3,7 +3,8 @@
     "author": "Max",
     "version": "1.0.0",
     "homePage": "https://github.com/mro1229/ST-StatsTracker",
-    "js": "StatsTracker.js",
+    "js": "index.js",
     "css": "style.css",
     "loading_order": 15
 }
+

@@ -150,6 +150,18 @@ function clampTextToBox(str, maxChars = 220) {
   return t;
 }
 
+function findField(obj, wanted) {
+  if (!obj || typeof obj !== "object") return undefined;
+
+  const canon = wanted.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+  for (const [key, value] of Object.entries(obj)) {
+    const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (normalizedKey === canon) return value;
+  }
+  return undefined;
+}
+
 function normalizeStats(obj) {
   const out = {};
   for (const key of ["Health", "Sustenance", "Energy", "Hygiene", "Arousal"]) {
@@ -157,16 +169,21 @@ function normalizeStats(obj) {
     if (c !== null) out[key] = c;
   }
 
-  // Genital size in cm (accept a number, keep realistic)
-if (obj?.GenitalSize != null || obj?.genitalSize != null) {
-  const raw = obj?.GenitalSize ?? obj?.genitalSize;
-  const n = Number(raw);
+  const genitalSizeRaw = findField(obj, "GenitalSize");
+
+if (genitalSizeRaw != null) {
+  let n = Number(genitalSizeRaw);
+
+  // Accept strings like "10 cm", "10cm", "10.5"
+  if (!Number.isFinite(n) && typeof genitalSizeRaw === "string") {
+    const m = genitalSizeRaw.match(/(\d+(?:[.,]\d+)?)/);
+    if (m) n = Number(m[1].replace(",", "."));
+  }
+
   if (Number.isFinite(n)) {
-    // Clamp to a sane range and keep one decimal
     out.GenitalSize = Math.max(0, Math.min(100, Math.round(n * 10) / 10));
   }
 }
-
 
   if (obj?.Mood != null) out.Mood = String(obj.Mood).trim().slice(0, 60) || "Neutral";
 
@@ -184,16 +201,13 @@ if (obj?.GenitalSize != null || obj?.genitalSize != null) {
     out.Appearance = clampTextToBox(obj.Appearance, 220);
   }
   
-  const genitalAppearanceRaw =
-  obj?.GenitalAppearance ??
-  obj?.genitalAppearance ??
-  obj?.GENITAL_APPEARANCE;
+  const genitalAppearanceRaw = findField(obj, "GenitalAppearance");
 
   if (genitalAppearanceRaw != null) {
     out.GenitalAppearance = clampTextToBox(genitalAppearanceRaw, 220);
   }
-  
-  return out;
+
+return out;
 }
 
 function mergeInto(target, patch) {
@@ -790,6 +804,7 @@ $(async () => {
     console.error("[StatsTracker] Failed to initialize:", e);
   }
 });
+
 
 
 

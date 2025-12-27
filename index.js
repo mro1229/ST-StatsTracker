@@ -13,7 +13,7 @@ Rules:
 - Output MUST be valid JSON, and ONLY JSON. No Markdown fences, no commentary.
 - Use this exact shape:
 {
-  "user": { "Health": 0-100, "Sustenance": 0-100, "Energy": 0-100, "Hygiene": 0-100, "Arousal": 0-100, "GenitalSize": number (cm), "Mood": "string", "Conditions": ["string", "..."], "Appearance": "string" }, "GenitalAppearance": "string",
+  "user": { "Health": 0-100, "Sustenance": 0-100, "Energy": 0-100, "Hygiene": 0-100, "Arousal": 0-100, "GenitalSize": number (cm), "Mood": "string", "Conditions": ["string", "..."], "Appearance": "string", "GenitalAppearance": "string" },
   "bot":  { same fields as user }
 }
 - Clamp numeric values to 0..100.
@@ -330,6 +330,7 @@ function render(kind) {
     ${buildMoodRow(stats.Mood)}
     ${buildConditionsRow(conditions)}
     ${buildAppearanceRow(stats.Appearance)}
+    ${buildGenitalAppearanceRow(stats.GenitalAppearance)}
   `;
 }
 
@@ -610,6 +611,9 @@ async function updateStatsFromLLM() {
     // Ensure appearance always exists (defensive for older saved states)
     if (!settings.state.user.Appearance) settings.state.user.Appearance = "No data yet.";
     if (!settings.state.bot.Appearance) settings.state.bot.Appearance = "No data yet.";
+    if (!settings.state.user.GenitalAppearance) settings.state.user.GenitalAppearance = "No data yet.";
+    if (!settings.state.bot.GenitalAppearance) settings.state.bot.GenitalAppearance = "No data yet.";
+
 
     saveSettingsDebounced();
 
@@ -672,6 +676,7 @@ $(async () => {
     console.error("[StatsTracker] Failed to initialize:", e);
   }
 });
+
 
 
 
